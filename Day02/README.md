@@ -22,12 +22,12 @@ Where:
 
 ---
 ## Example
-  --- Michaelis-Menten Kinetics Calculator ---
+   # Michaelis-Menten Kinetics Calculator
 Enter maximum reaction velocity (Vmax): 100
 Enter substrate concentration ([S]): 5
 Enter Michaelis constant (Km): 15
 
---- Results ---
+# Result
 Vmax: 100.0
 [S]:  5.0
 Km:   15.0
