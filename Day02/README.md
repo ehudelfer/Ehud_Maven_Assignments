@@ -1,37 +1,36 @@
-# Day 02: Michaelis–Menten Kinetics Calculator
+# Setting Up a GitHub Repository and VS Code Locally
 
-This program calculates the reaction velocity ($v$) of an enzyme-catalyzed reaction using **Michaelis–Menten kinetics**.
-
-## Overview & Formula
-
-The Michaelis–Menten equation models how the rate of an enzymatic reaction depends on the concentration of a substrate:
-
-$$v = \frac{V_{\max} \cdot [S]}{K_m + [S]}$$
-
-Where:
-- **$V_{\max}$**: Maximum reaction velocity achievable at saturating substrate concentration.
-- **$[S]$**: Substrate concentration.
-- **$K_m$**: Michaelis constant (the substrate concentration at which the reaction velocity is half of $V_{\max}$).
-- **$v$**: Calculated reaction velocity.
+This guide walks you through creating a new repository on GitHub, cloning it to your local machine using **Visual Studio Code (VS Code)**, and creating a Python script that prints `"Hello, World!"`.
 
 ---
 
-## Files
+## Step 1: Create a New Repository on GitHub
 
-- `michaelis_menten.py`: Python script containing the calculator program.
+1. Log in to your account at [GitHub](https://github.com).
+2. Click the **`+`** icon in the top-right corner and select **New repository**.
+3. Configure your repository:
+   * **Repository name**: Enter a name (e.g., `Ehud_Maven_Assignments`).
+   * **Initialize this repository with**: Check the box for **Add a README file**.
+4. Click **Create repository**.
 
 ---
 
-## Example
+## Step 2: Clone the Repository via VS Code
 
-```text
---- Michaelis-Menten Kinetics Calculator ---
-Enter maximum reaction velocity (Vmax): 100
-Enter substrate concentration ([S]): 5
-Enter Michaelis constant (Km): 15
+1. In GitHub, click the green **`< Code >`** button on your repository page and copy the **HTTPS URL**.
+2. Open VS Code.
+3. Choose **"Clone Git Repository"** and copy the **HTTPS URL**. 
 
---- Results ---
-Vmax: 100.0
-[S]:  5.0
-Km:   15.0
-Reaction Velocity (v): 25.0000
+---
+## Step 3: Create and Run the Python File
+
+1. In VS Code's Explorer panel (left sidebar), press the **New Folder** icon and creat **"Day02"** folder.
+2. Press the **New File** icon and creat **"hello_world"** file.
+3. Write the command **"print("Hello, World!")"**.
+4. Press **F5** and test the script.
+
+---
+## step 4: Commit Changes in the Repository
+
+1. Under **Source Control** press the **+** icon on the changes created, name the commit and press the commit icon.
+2. Go back to Github and check that the new folder and file have been added to the Repository.
