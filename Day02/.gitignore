@@ -1,0 +1,2 @@
+# Write files name that you would like to ignore in this file. For example, if you want to ignore all .log files, you would add the following line:
+*.log
