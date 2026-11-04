@@ -51,7 +51,7 @@ The program tries YuNet first and falls back to OpenCV if it cannot detect a fac
 
 Play the [NBA Face Puzzle in your browser](https://ehudelfer.github.io/Ehud_Maven_Assignments/). The desktop Python source is [nba_puzzle_game.py](nba_puzzle_game.py).
 
-To publish the browser game, push this repository to `main`, then open **Settings > Pages** on GitHub and set the source to **GitHub Actions**. The included workflow deploys the game automatically. The share link above works after that first deployment completes. The browser leaderboard is saved on each player's device; it is not shared across players.
+To publish without a personal access token, open **Settings > Pages** on GitHub. Under **Build and deployment**, choose **Deploy from a branch**, select branch `main` and folder `/docs`, then save. GitHub Pages will publish the browser game from the root `docs` folder and update it when changes are pushed. The share link above works after the first deployment completes. The browser leaderboard is saved on each player's device; it is not shared across players.
 
 Start the Tkinter game with the Python environment that has Pillow installed:
 
