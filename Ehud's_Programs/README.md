@@ -59,7 +59,7 @@ Start the Tkinter game with the Python environment that has Pillow installed:
 python nba_puzzle_game.py
 ```
 
-Enter a nickname, then guess the NBA player shown by the revealed face tiles. Submit guesses with Enter, reveal more tiles, or skip to another player. The roster includes current and historical NBA players. Their headshots download from the NBA CDN on demand and are cached under `~/.nba_puzzle_game/images`; an internet connection is needed the first time each photo is used. To use your own image files, place them in `nba_player_images` beside the script and name each file with the player's name normalized to lowercase letters and digits, such as `lebronjames.jpg`. The top-five session leaderboard is stored in `leaderboard.json` beside the script.
+Enter a nickname, then guess the NBA player shown by the revealed face tiles. Submit guesses with Enter, reveal more tiles, or skip to another player. The shared roster has 100 current and past players. Reveal answer ends the session as a loss and records the score. Most headshots download from the NBA CDN; Magic Johnson's replacement portrait is credited in-game to Daniel Benavides under CC BY 2.0. To use your own desktop images, place them in `nba_player_images` beside the script and name each file with the player's name normalized to lowercase letters and digits, such as `lebronjames.jpg`. The top-five desktop leaderboard is stored in `leaderboard.json` beside the script; browser scores are saved per device.
 
 ## Test
 
