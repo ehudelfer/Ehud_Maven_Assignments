@@ -1,33 +1,13 @@
 "use strict";
 
-const PLAYERS = [
-  { name: "LeBron James", id: 2544, aliases: ["King James"] },
-  { name: "Stephen Curry", id: 201939, aliases: ["Steph Curry"] },
-  { name: "Kevin Durant", id: 201142, aliases: ["KD"] },
-  { name: "Giannis Antetokounmpo", id: 203507, aliases: ["The Greek Freak"] },
-  { name: "Luka Doncic", id: 1629029, aliases: ["Luka Dončić"] },
-  { name: "Jayson Tatum", id: 1628369, aliases: [] },
-  { name: "Nikola Jokic", id: 203999, aliases: ["Nikola Jokić"] },
-  { name: "Joel Embiid", id: 203954, aliases: [] },
-  { name: "Kawhi Leonard", id: 202695, aliases: [] },
-  { name: "Anthony Edwards", id: 1630162, aliases: [] },
-  { name: "Kobe Bryant", id: 977, aliases: ["Black Mamba"] },
-  { name: "Michael Jordan", id: 893, aliases: ["MJ"] },
-  { name: "Shaquille O'Neal", id: 406, aliases: ["Shaq"] },
-  { name: "Magic Johnson", id: 771, aliases: [] },
-  { name: "Larry Bird", id: 1449, aliases: [] },
-  { name: "Tim Duncan", id: 1495, aliases: [] },
-  { name: "Allen Iverson", id: 947, aliases: ["The Answer"] },
-  { name: "Hakeem Olajuwon", id: 165, aliases: [] },
-  { name: "Dwyane Wade", id: 2548, aliases: [] },
-  { name: "Dirk Nowitzki", id: 1717, aliases: [] },
-];
+let PLAYERS = [];
 
 const LEADERBOARD_KEY = "full-court-faceoff-leaderboard-v1";
 const elements = Object.fromEntries(
   [
     "board", "photo-message", "round-label", "tile-count", "status", "guess-form",
-    "guess-input", "submit-button", "reveal-button", "skip-button", "round-actions",
+    "guess-input", "submit-button", "reveal-button", "skip-button", "reveal-answer-button",
+    "photo-credit", "welcome-title", "round-actions",
     "next-button", "finish-button", "nickname-display", "solved-count", "guess-count",
     "pieces-count", "leaderboard-rows", "name-overlay", "name-form", "nickname-input",
     "final-score", "final-leaderboard", "session-finished", "new-session-button",
@@ -48,6 +28,8 @@ const game = {
   photoReady: false,
   roundToken: 0,
   finished: false,
+  lost: false,
+  sessionRecorded: false,
 };
 
 function normalize(value) {
@@ -91,7 +73,26 @@ function matchesPlayer(guess, player) {
 }
 
 function imageUrl(player) {
-  return `https://cdn.nba.com/headshots/nba/latest/1040x760/${player.id}.png`;
+  return player.image_url || `https://cdn.nba.com/headshots/nba/latest/1040x760/${player.id}.png`;
+}
+
+function renderPhotoCredit(player) {
+  elements["photo-credit"].replaceChildren();
+  if (!player?.attribution) {
+    elements["photo-credit"].textContent = "PLAYER PHOTOS: NBA.COM";
+    return;
+  }
+  const creditLink = document.createElement("a");
+  creditLink.href = player.attribution.source_url;
+  creditLink.target = "_blank";
+  creditLink.rel = "noreferrer";
+  creditLink.textContent = player.attribution.credit;
+  const licenseLink = document.createElement("a");
+  licenseLink.href = player.attribution.license_url;
+  licenseLink.target = "_blank";
+  licenseLink.rel = "noreferrer";
+  licenseLink.textContent = player.attribution.license;
+  elements["photo-credit"].append("PHOTO: ", creditLink, " · ", licenseLink, " · cropped");
 }
 
 function setStatus(message, kind = "") {
@@ -198,6 +199,7 @@ function beginRound() {
   elements["guess-input"].disabled = true;
   elements["submit-button"].disabled = true;
   elements["reveal-button"].disabled = true;
+  elements["reveal-answer-button"].disabled = true;
   elements["skip-button"].disabled = false;
   elements["round-actions"].hidden = true;
   setStatus("Loading player photo...");
@@ -205,6 +207,7 @@ function beginRound() {
   renderTiles();
 
   const photo = new Image();
+  renderPhotoCredit(game.player);
   photo.onload = () => {
     if (token !== game.roundToken) return;
     game.imageUrl = photo.src;
@@ -212,6 +215,7 @@ function beginRound() {
     elements["guess-input"].disabled = false;
     elements["submit-button"].disabled = false;
     elements["reveal-button"].disabled = false;
+    elements["reveal-answer-button"].disabled = false;
     setStatus("Your move.");
     renderTiles();
     elements["guess-input"].focus();
@@ -234,6 +238,8 @@ function startSession(nickname) {
   game.solved = 0;
   game.pieces = 0;
   game.finished = false;
+  game.lost = false;
+  game.sessionRecorded = false;
   elements["nickname-display"].textContent = game.nickname;
   elements["name-overlay"].hidden = true;
   elements["session-finished"].hidden = true;
@@ -274,6 +280,7 @@ function submitGuess(event) {
   elements["submit-button"].disabled = true;
   elements["reveal-button"].disabled = true;
   elements["skip-button"].disabled = true;
+  elements["reveal-answer-button"].disabled = true;
   elements["round-actions"].hidden = false;
   renderStats();
 }
@@ -284,8 +291,24 @@ function skipPlayer() {
   beginRound();
 }
 
+function revealAnswer() {
+  if (!game.photoReady || !game.player || game.finished) return;
+  game.finished = true;
+  game.lost = true;
+  game.pieces += game.revealed.size;
+  setStatus(`Answer: ${game.player.name}. You lost this puzzle.`, "wrong");
+  elements["guess-input"].disabled = true;
+  elements["submit-button"].disabled = true;
+  elements["reveal-button"].disabled = true;
+  elements["skip-button"].disabled = true;
+  elements["reveal-answer-button"].disabled = true;
+  renderStats();
+  finishSession();
+}
+
 function finishSession() {
-  if (game.finished !== true || !game.nickname) return;
+  if (game.finished !== true || !game.nickname || game.sessionRecorded) return;
+  game.sessionRecorded = true;
   const scores = loadScores();
   scores.push({
     nickname: game.nickname,
@@ -299,7 +322,9 @@ function finishSession() {
     setStatus("Session finished, but browser storage is unavailable.", "wrong");
   }
   game.roundToken += 1;
-  elements["final-score"].textContent = `${game.nickname} solved ${game.solved} ${game.solved === 1 ? "puzzle" : "puzzles"} in ${game.sessionGuesses} guesses, using ${game.pieces} tiles.`;
+  elements["final-score"].textContent = game.lost
+    ? `${game.nickname} revealed ${game.player.name} and lost. Session score: ${game.solved} solved, ${game.sessionGuesses} guesses, ${game.pieces} tiles.`
+    : `${game.nickname} solved ${game.solved} ${game.solved === 1 ? "puzzle" : "puzzles"} in ${game.sessionGuesses} guesses, using ${game.pieces} tiles.`;
   elements["session-finished"].hidden = false;
   renderLeaderboard(elements["final-leaderboard"]);
   renderLeaderboard();
@@ -312,6 +337,7 @@ elements["name-form"].addEventListener("submit", (event) => {
 elements["guess-form"].addEventListener("submit", submitGuess);
 elements["reveal-button"].addEventListener("click", revealTile);
 elements["skip-button"].addEventListener("click", skipPlayer);
+elements["reveal-answer-button"].addEventListener("click", revealAnswer);
 elements["next-button"].addEventListener("click", beginRound);
 elements["finish-button"].addEventListener("click", finishSession);
 elements["new-session-button"].addEventListener("click", () => {
@@ -321,5 +347,30 @@ elements["new-session-button"].addEventListener("click", () => {
   elements["nickname-input"].focus();
 });
 
-renderLeaderboard();
-elements["nickname-input"].focus();
+async function initializeGame() {
+  const startButton = elements["name-form"].querySelector("button[type='submit']");
+  startButton.disabled = true;
+  elements["welcome-title"].textContent = "Loading player roster...";
+  try {
+    const response = await fetch("players.json");
+    if (!response.ok) throw new Error(`Roster request failed (${response.status}).`);
+    const roster = await response.json();
+    if (!Array.isArray(roster) || roster.length < 100) {
+      throw new Error("Roster must contain at least 100 players.");
+    }
+    if (new Set(roster.map((player) => player.id)).size !== roster.length) {
+      throw new Error("Roster contains duplicate player IDs.");
+    }
+    PLAYERS = roster;
+    elements["welcome-title"].textContent = "Who's playing?";
+    startButton.disabled = false;
+    renderLeaderboard();
+    elements["nickname-input"].focus();
+  } catch (error) {
+    elements["welcome-title"].textContent = "Roster unavailable";
+    elements["name-form"].querySelector("label").textContent = error.message;
+    elements["nickname-input"].disabled = true;
+  }
+}
+
+initializeGame();

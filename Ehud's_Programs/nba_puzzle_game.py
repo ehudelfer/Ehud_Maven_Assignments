@@ -10,6 +10,7 @@ import random
 import re
 import threading
 import unicodedata
+import webbrowser
 from pathlib import Path
 from queue import Empty, Queue
 from tkinter import Button, Canvas, Entry, Frame, Label, StringVar, Tk, messagebox, simpledialog
@@ -28,6 +29,7 @@ NBA_HEADSHOT_URL = "https://cdn.nba.com/headshots/nba/latest/1040x760/{player_id
 IMAGE_CACHE = Path.home() / ".nba_puzzle_game" / "images"
 LOCAL_IMAGE_DIR = Path(__file__).with_name("nba_player_images")
 LEADERBOARD_PATH = Path(__file__).with_name("leaderboard.json")
+PLAYER_DATA_PATH = Path(__file__).parents[1] / "docs" / "players.json"
 
 
 @dataclass(frozen=True)
@@ -35,38 +37,58 @@ class Player:
     name: str
     player_id: int
     aliases: tuple[str, ...] = ()
+    image_url_override: str | None = None
+    attribution: dict[str, str] | None = None
 
     @property
     def image_url(self) -> str:
-        return NBA_HEADSHOT_URL.format(player_id=self.player_id)
+        return self.image_url_override or NBA_HEADSHOT_URL.format(player_id=self.player_id)
 
     @property
     def image_filename(self) -> str:
         return f"{self.player_id}.png"
 
 
-PLAYER_ROSTER = (
-    Player("LeBron James", 2544, ("King James",)),
-    Player("Stephen Curry", 201939, ("Steph Curry",)),
-    Player("Kevin Durant", 201142, ("KD",)),
-    Player("Giannis Antetokounmpo", 203507, ("The Greek Freak",)),
-    Player("Luka Doncic", 1629029, ("Luka Dončić",)),
-    Player("Jayson Tatum", 1628369),
-    Player("Nikola Jokic", 203999, ("Nikola Jokić",)),
-    Player("Joel Embiid", 203954),
-    Player("Kawhi Leonard", 202695),
-    Player("Anthony Edwards", 1630162),
-    Player("Kobe Bryant", 977, ("Black Mamba",)),
-    Player("Michael Jordan", 893, ("MJ",)),
-    Player("Shaquille O'Neal", 406, ("Shaq",)),
-    Player("Magic Johnson", 771),
-    Player("Larry Bird", 1449),
-    Player("Tim Duncan", 1495),
-    Player("Allen Iverson", 947, ("The Answer",)),
-    Player("Hakeem Olajuwon", 165),
-    Player("Dwyane Wade", 2548),
-    Player("Dirk Nowitzki", 1717),
-)
+def load_player_roster(path: Path = PLAYER_DATA_PATH) -> tuple[Player, ...]:
+    """Load the shared roster used by the desktop and browser games."""
+    try:
+        records = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as error:
+        raise ValueError(f"Could not load player data from {path}: {error}") from error
+    if not isinstance(records, list):
+        raise ValueError("Player data must be a JSON list.")
+
+    players = []
+    for record in records:
+        if not isinstance(record, dict):
+            continue
+        name = record.get("name")
+        player_id = record.get("id")
+        aliases = record.get("aliases", [])
+        if (
+            isinstance(name, str)
+            and name.strip()
+            and isinstance(player_id, int)
+            and not isinstance(player_id, bool)
+            and isinstance(aliases, list)
+        ):
+            players.append(
+                Player(
+                    name=name.strip(),
+                    player_id=player_id,
+                    aliases=tuple(alias for alias in aliases if isinstance(alias, str)),
+                    image_url_override=record.get("image_url"),
+                    attribution=record.get("attribution"),
+                )
+            )
+    if len(players) < 100:
+        raise ValueError(f"Player data must contain at least 100 valid players; found {len(players)}.")
+    if len({player.player_id for player in players}) != len(players):
+        raise ValueError("Player data contains duplicate player IDs.")
+    return tuple(players)
+
+
+PLAYER_ROSTER = load_player_roster()
 
 
 def normalize_name(name: str) -> str:
@@ -146,6 +168,13 @@ class GameEngine:
         self.session_pieces += self.revealed_count
         self.round_finished = True
         return True
+
+    def reveal_answer(self) -> Player | None:
+        if self.round_finished:
+            return None
+        self.session_pieces += self.revealed_count
+        self.round_finished = True
+        return self.current_player
 
     def skip_player(self) -> Player:
         if not self.round_finished:
@@ -367,6 +396,17 @@ class NBAPuzzleGame:
             pady=8,
         )
         self.skip_button.pack(side="left", padx=5)
+        self.reveal_answer_button = Button(
+            action_row,
+            text="Reveal answer",
+            command=self._reveal_answer,
+            font=("Segoe UI", 10),
+            relief="solid",
+            bd=1,
+            padx=14,
+            pady=8,
+        )
+        self.reveal_answer_button.pack(side="left", padx=5)
 
         self.status = StringVar(value="Loading player photo...")
         Label(
@@ -386,6 +426,17 @@ class NBAPuzzleGame:
             fg="#64748b",
             bg="#f1f3f5",
         ).pack(pady=5)
+        self.photo_credit = StringVar()
+        self.photo_credit_label = Label(
+            self.root,
+            textvariable=self.photo_credit,
+            font=("Segoe UI", 8),
+            fg="#64748b",
+            bg="#f1f3f5",
+            wraplength=480,
+        )
+        self.photo_credit_label.pack(pady=(0, 7))
+        self.photo_credit_label.bind("<Button-1>", self._open_photo_source)
 
     def _begin_round(self) -> None:
         player = self.engine.current_player
@@ -396,7 +447,16 @@ class NBAPuzzleGame:
         self.guess_entry.config(state="normal")
         self.submit_button.config(state="normal")
         self.reveal_button.config(state="disabled")
+        self.reveal_answer_button.config(state="disabled")
         self.skip_button.config(state="normal")
+        self.photo_credit.set("PLAYER PHOTOS: NBA.COM")
+        if player.attribution:
+            credit = player.attribution.get("credit", "Wikimedia Commons")
+            license_name = player.attribution.get("license", "")
+            self.photo_credit.set(f"PHOTO: {credit} ({license_name}) · click for source/license")
+            self.photo_credit_label.config(cursor="hand2")
+        else:
+            self.photo_credit_label.config(cursor="")
         self.status.set("Loading player photo...")
         self._draw_grid()
         self._update_progress()
@@ -425,6 +485,7 @@ class NBAPuzzleGame:
                         )
                     self.status.set("Guess the player, reveal a piece, or skip.")
                     self.reveal_button.config(state="normal")
+                    self.reveal_answer_button.config(state="normal")
                     self._draw_grid()
                 except (OSError, ValueError) as image_error:
                     self._image_error(str(image_error))
@@ -446,6 +507,13 @@ class NBAPuzzleGame:
             font=("Segoe UI", 13, "bold"),
         )
         self.root.title(f"NBA Face Puzzle | Photo error: {error[:80]}")
+
+    def _open_photo_source(self, _event: object) -> None:
+        player = self.engine.current_player
+        if player is not None and player.attribution:
+            source_url = player.attribution.get("source_url")
+            if source_url:
+                webbrowser.open(source_url)
 
     def _draw_grid(self) -> None:
         if not hasattr(self, "canvas"):
@@ -521,6 +589,7 @@ class NBAPuzzleGame:
             self.guess_entry.config(state="disabled")
             self.submit_button.config(state="disabled")
             self.reveal_button.config(state="disabled")
+            self.reveal_answer_button.config(state="disabled")
             self.skip_button.config(state="disabled")
             self.root.after(300, self._ask_play_again)
         else:
@@ -532,6 +601,19 @@ class NBAPuzzleGame:
             self._update_progress()
         if self.engine.revealed_count >= TILE_COUNT:
             self.reveal_button.config(state="disabled")
+
+    def _reveal_answer(self) -> None:
+        player = self.engine.reveal_answer()
+        if player is None:
+            return
+        self.status.set(f"Answer revealed: {player.name}. You lost this puzzle.")
+        self.guess_entry.config(state="disabled")
+        self.submit_button.config(state="disabled")
+        self.reveal_button.config(state="disabled")
+        self.reveal_answer_button.config(state="disabled")
+        self.skip_button.config(state="disabled")
+        self._update_progress()
+        self.root.after(150, self._finish_session)
 
     def _skip_player(self) -> None:
         self.engine.skip_player()
