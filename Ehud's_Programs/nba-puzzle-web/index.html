@@ -1,0 +1,123 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="theme-color" content="#f2f3ed" />
+    <meta
+      name="description"
+      content="A browser-based NBA player face puzzle. Reveal tiles and name the player."
+    />
+    <title>Full Court Face-Off</title>
+    <link rel="stylesheet" href="styles.css" />
+    <script src="game.js" defer></script>
+  </head>
+  <body>
+    <header class="topbar">
+      <a class="wordmark" href="./" aria-label="Full Court Face-Off home">
+        <span class="wordmark-mark" aria-hidden="true">9</span>
+        <span>FULL COURT <b>FACE-OFF</b></span>
+      </a>
+      <span class="topbar-note">NBA PLAYER PUZZLE</span>
+    </header>
+
+    <main class="layout">
+      <section class="game" aria-labelledby="page-title">
+        <div class="game-heading">
+          <div>
+            <p class="eyebrow">THE FACE-OFF</p>
+            <h1 id="page-title">Name that player.</h1>
+          </div>
+          <p class="round-label" id="round-label">ROUND 01</p>
+        </div>
+
+        <div class="board-wrap">
+          <div class="board" id="board" role="img" aria-label="Hidden NBA player face puzzle"></div>
+          <div class="photo-message" id="photo-message" hidden></div>
+        </div>
+
+        <div class="board-meta">
+          <span id="tile-count">01 / 09 TILES</span>
+          <span class="live-status" id="status" aria-live="polite">Enter a nickname to begin.</span>
+        </div>
+
+        <form class="guess-form" id="guess-form">
+          <label class="visually-hidden" for="guess-input">Player name</label>
+          <input
+            id="guess-input"
+            name="guess"
+            type="text"
+            placeholder="Player's full name"
+            autocomplete="off"
+            maxlength="60"
+            disabled
+          />
+          <button class="button button-primary" id="submit-button" type="submit" disabled>
+            Submit <span aria-hidden="true">↗</span>
+          </button>
+        </form>
+
+        <div class="game-actions">
+          <button class="button button-reveal" id="reveal-button" type="button" disabled>
+            <span class="reveal-icon" aria-hidden="true">▦</span> Reveal tile
+          </button>
+          <button class="button button-quiet" id="skip-button" type="button" disabled>
+            Skip player <span aria-hidden="true">→</span>
+          </button>
+        </div>
+
+        <div class="round-actions" id="round-actions" hidden>
+          <button class="button button-primary" id="next-button" type="button">Next player</button>
+          <button class="button button-quiet" id="finish-button" type="button">Finish session</button>
+        </div>
+      </section>
+
+      <aside class="scoreboard" aria-label="Session scoreboard">
+        <section class="player-block">
+          <p class="eyebrow">AT THE TABLE</p>
+          <p class="player-name" id="nickname-display">Your session</p>
+        </section>
+
+        <section class="stats-block" aria-label="Current session statistics">
+          <div class="stat-line"><span>Solved</span><strong id="solved-count">0</strong></div>
+          <div class="stat-line"><span>Guesses</span><strong id="guess-count">0</strong></div>
+          <div class="stat-line"><span>Tiles used</span><strong id="pieces-count">0</strong></div>
+        </section>
+
+        <section class="leaderboard" aria-labelledby="leaderboard-title">
+          <div class="leaderboard-heading">
+            <div>
+              <p class="eyebrow">PERSONAL BESTS</p>
+              <h2 id="leaderboard-title">Top five</h2>
+            </div>
+            <span class="local-label">THIS BROWSER</span>
+          </div>
+          <div id="leaderboard-rows" class="leaderboard-rows"></div>
+        </section>
+
+        <p class="credit">PLAYER PHOTOS: NBA.COM</p>
+      </aside>
+    </main>
+
+    <div class="overlay" id="name-overlay" role="dialog" aria-modal="true" aria-labelledby="welcome-title">
+      <form class="name-dialog" id="name-form">
+        <p class="eyebrow">TIP-OFF</p>
+        <h2 id="welcome-title">Who's playing?</h2>
+        <label for="nickname-input">Nickname</label>
+        <input id="nickname-input" name="nickname" type="text" maxlength="24" autocomplete="nickname" required />
+        <button class="button button-primary" type="submit">Start game <span aria-hidden="true">↗</span></button>
+      </form>
+    </div>
+
+    <section class="session-finished" id="session-finished" aria-labelledby="finished-title" hidden>
+      <div class="finished-content">
+        <p class="eyebrow">FINAL BUZZER</p>
+        <h2 id="finished-title">Session complete.</h2>
+        <p id="final-score"></p>
+        <h3>Top five on this browser</h3>
+        <div id="final-leaderboard" class="leaderboard-rows"></div>
+        <button class="button button-primary" id="new-session-button" type="button">Play again</button>
+      </div>
+    </section>
+  </body>
+</html>
