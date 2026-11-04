@@ -1,0 +1,597 @@
+"""Guess NBA players from partially revealed face photos."""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from difflib import SequenceMatcher
+import io
+import json
+import random
+import re
+import threading
+import unicodedata
+from pathlib import Path
+from queue import Empty, Queue
+from tkinter import Button, Canvas, Entry, Frame, Label, StringVar, Tk, messagebox, simpledialog
+from urllib.error import URLError
+from urllib.request import Request, urlopen
+
+from PIL import Image, ImageOps, ImageTk
+
+
+WINDOW_WIDTH = 560
+WINDOW_HEIGHT = 670
+GRID_WIDTH = 450
+GRID_HEIGHT = 330
+TILE_COUNT = 9
+NBA_HEADSHOT_URL = "https://cdn.nba.com/headshots/nba/latest/1040x760/{player_id}.png"
+IMAGE_CACHE = Path.home() / ".nba_puzzle_game" / "images"
+LOCAL_IMAGE_DIR = Path(__file__).with_name("nba_player_images")
+LEADERBOARD_PATH = Path(__file__).with_name("leaderboard.json")
+
+
+@dataclass(frozen=True)
+class Player:
+    name: str
+    player_id: int
+    aliases: tuple[str, ...] = ()
+
+    @property
+    def image_url(self) -> str:
+        return NBA_HEADSHOT_URL.format(player_id=self.player_id)
+
+    @property
+    def image_filename(self) -> str:
+        return f"{self.player_id}.png"
+
+
+PLAYER_ROSTER = (
+    Player("LeBron James", 2544, ("King James",)),
+    Player("Stephen Curry", 201939, ("Steph Curry",)),
+    Player("Kevin Durant", 201142, ("KD",)),
+    Player("Giannis Antetokounmpo", 203507, ("The Greek Freak",)),
+    Player("Luka Doncic", 1629029, ("Luka Dončić",)),
+    Player("Jayson Tatum", 1628369),
+    Player("Nikola Jokic", 203999, ("Nikola Jokić",)),
+    Player("Joel Embiid", 203954),
+    Player("Kawhi Leonard", 202695),
+    Player("Anthony Edwards", 1630162),
+    Player("Kobe Bryant", 977, ("Black Mamba",)),
+    Player("Michael Jordan", 893, ("MJ",)),
+    Player("Shaquille O'Neal", 406, ("Shaq",)),
+    Player("Magic Johnson", 771),
+    Player("Larry Bird", 1449),
+    Player("Tim Duncan", 1495),
+    Player("Allen Iverson", 947, ("The Answer",)),
+    Player("Hakeem Olajuwon", 165),
+    Player("Dwyane Wade", 2548),
+    Player("Dirk Nowitzki", 1717),
+)
+
+
+def normalize_name(name: str) -> str:
+    """Normalize accents, punctuation, and spacing for answer comparison."""
+    decomposed = unicodedata.normalize("NFKD", name.casefold())
+    without_accents = "".join(char for char in decomposed if not unicodedata.combining(char))
+    return re.sub(r"[^a-z0-9]", "", without_accents)
+
+
+def names_match(guess: str, player: Player) -> bool:
+    normalized_guess = normalize_name(guess)
+    if not normalized_guess:
+        return False
+    accepted_names = (player.name, *player.aliases)
+    for accepted_name in accepted_names:
+        normalized_answer = normalize_name(accepted_name)
+        if normalized_guess == normalized_answer:
+            return True
+        if len(normalized_guess) >= 5 and SequenceMatcher(
+            None, normalized_guess, normalized_answer
+        ).ratio() >= 0.88:
+            return True
+        guess_words = sorted(re.findall(r"[a-z0-9]+", guess.casefold()))
+        answer_words = sorted(re.findall(r"[a-z0-9]+", accepted_name.casefold()))
+        if guess_words == answer_words:
+            return True
+    return False
+
+
+class GameEngine:
+    """Track puzzle rounds, guesses, reveals, and session totals."""
+
+    def __init__(self, players: tuple[Player, ...] = PLAYER_ROSTER) -> None:
+        if not players:
+            raise ValueError("The game needs at least one player.")
+        self.players = players
+        self._random = random.Random()
+        self._available_players = list(players)
+        self.current_player: Player | None = None
+        self.revealed_tiles: set[int] = set()
+        self.round_guesses = 0
+        self.session_guesses = 0
+        self.session_pieces = 0
+        self.solved_count = 0
+        self.round_finished = False
+        self.start_round()
+
+    @property
+    def revealed_count(self) -> int:
+        return len(self.revealed_tiles)
+
+    def start_round(self) -> Player:
+        if not self._available_players:
+            self._available_players = list(self.players)
+        self.current_player = self._random.choice(self._available_players)
+        self._available_players.remove(self.current_player)
+        self.revealed_tiles = {self._random.randrange(TILE_COUNT)}
+        self.round_guesses = 0
+        self.round_finished = False
+        return self.current_player
+
+    def reveal_piece(self) -> bool:
+        if self.round_finished or self.revealed_count >= TILE_COUNT:
+            return False
+        hidden_tiles = set(range(TILE_COUNT)) - self.revealed_tiles
+        self.revealed_tiles.add(self._random.choice(tuple(hidden_tiles)))
+        return True
+
+    def submit_guess(self, guess: str) -> bool:
+        if self.round_finished or self.current_player is None or not guess.strip():
+            return False
+        self.round_guesses += 1
+        self.session_guesses += 1
+        if not names_match(guess, self.current_player):
+            return False
+        self.solved_count += 1
+        self.session_pieces += self.revealed_count
+        self.round_finished = True
+        return True
+
+    def skip_player(self) -> Player:
+        if not self.round_finished:
+            self.session_pieces += self.revealed_count
+        return self.start_round()
+
+
+class LeaderboardManager:
+    """Read and update the persistent top-five session scores."""
+
+    def __init__(self, path: Path = LEADERBOARD_PATH) -> None:
+        self.path = path
+        self.load_error: str | None = None
+        self.scores = self._load()
+
+    def _load(self) -> list[dict[str, int | str]]:
+        if not self.path.exists():
+            return []
+        try:
+            data = json.loads(self.path.read_text(encoding="utf-8"))
+            if not isinstance(data, list):
+                raise ValueError("Leaderboard data must be a JSON list.")
+            scores = []
+            for entry in data:
+                if not isinstance(entry, dict):
+                    continue
+                name = entry.get("nickname")
+                solved = entry.get("puzzles_solved")
+                guesses = entry.get("guesses")
+                pieces = entry.get("pieces")
+                if (
+                    isinstance(name, str)
+                    and name.strip()
+                    and all(isinstance(value, int) and not isinstance(value, bool) and value >= 0
+                            for value in (solved, guesses, pieces))
+                ):
+                    scores.append(
+                        {
+                            "nickname": name.strip(),
+                            "puzzles_solved": solved,
+                            "guesses": guesses,
+                            "pieces": pieces,
+                        }
+                    )
+            return self._rank(scores)[:5]
+        except (OSError, UnicodeError, json.JSONDecodeError, ValueError) as error:
+            self.load_error = f"The saved leaderboard could not be read ({error}). A new one will be created."
+            return []
+
+    @staticmethod
+    def _rank(scores: list[dict[str, int | str]]) -> list[dict[str, int | str]]:
+        return sorted(
+            scores,
+            key=lambda score: (
+                -int(score["puzzles_solved"]),
+                int(score["guesses"]),
+                int(score["pieces"]),
+                str(score["nickname"]).casefold(),
+            ),
+        )
+
+    def record(
+        self, nickname: str, puzzles_solved: int, guesses: int, pieces: int
+    ) -> None:
+        self.scores.append(
+            {
+                "nickname": nickname.strip(),
+                "puzzles_solved": puzzles_solved,
+                "guesses": guesses,
+                "pieces": pieces,
+            }
+        )
+        self.scores = self._rank(self.scores)[:5]
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        temporary_path = self.path.with_suffix(self.path.suffix + ".tmp")
+        temporary_path.write_text(json.dumps(self.scores, indent=2), encoding="utf-8")
+        temporary_path.replace(self.path)
+
+    def formatted_table(self) -> str:
+        if not self.scores:
+            return "No scores recorded yet."
+        rows = ["Rank  Player             Solved  Guesses  Pieces", "-" * 53]
+        for rank, score in enumerate(self.scores, start=1):
+            rows.append(
+                f"{rank:<5} {str(score['nickname'])[:18]:<18} "
+                f"{int(score['puzzles_solved']):>6}  {int(score['guesses']):>7}  "
+                f"{int(score['pieces']):>6}"
+            )
+        return "\n".join(rows)
+
+
+def _read_image_bytes(player: Player) -> bytes:
+    """Load a local override or cached/downloaded NBA headshot."""
+    for suffix in (".jpg", ".jpeg", ".png", ".webp"):
+        local_path = LOCAL_IMAGE_DIR / f"{normalize_name(player.name)}{suffix}"
+        if local_path.is_file():
+            return local_path.read_bytes()
+
+    IMAGE_CACHE.mkdir(parents=True, exist_ok=True)
+    cached_path = IMAGE_CACHE / player.image_filename
+    if cached_path.is_file():
+        try:
+            with Image.open(cached_path) as image:
+                image.verify()
+            return cached_path.read_bytes()
+        except (OSError, ValueError):
+            cached_path.unlink(missing_ok=True)
+
+    request = Request(player.image_url, headers={"User-Agent": "NBA-Puzzle-Game/1.0"})
+    with urlopen(request, timeout=12) as response:
+        image_bytes = response.read()
+    with Image.open(io.BytesIO(image_bytes)) as image:
+        image.verify()
+    cached_path.write_bytes(image_bytes)
+    return image_bytes
+
+
+class NBAPuzzleGame:
+    """Tkinter interface for the NBA face-tile guessing game."""
+
+    def __init__(self, root: Tk, nickname: str) -> None:
+        self.root = root
+        self.nickname = nickname
+        self.engine = GameEngine()
+        self.leaderboard = LeaderboardManager()
+        self.image_queue: Queue[tuple[Player, bytes | None, str | None]] = Queue()
+        self.current_image: Image.Image | None = None
+        self.photo_tiles: list[object] = []
+        self.closed = False
+
+        self.root.title("NBA Face Puzzle")
+        self.root.geometry(f"{WINDOW_WIDTH}x{WINDOW_HEIGHT}")
+        self.root.minsize(500, 620)
+        self.root.configure(bg="#f1f3f5")
+        self.root.protocol("WM_DELETE_WINDOW", self._finish_session)
+
+        self._build_ui()
+        self._begin_round()
+        self.root.after(120, self._poll_image_queue)
+
+    def _build_ui(self) -> None:
+        heading = Label(
+            self.root,
+            text="NBA FACE PUZZLE",
+            font=("Segoe UI", 21, "bold"),
+            fg="#111827",
+            bg="#f1f3f5",
+        )
+        heading.pack(pady=(18, 2))
+        self.player_label = Label(
+            self.root,
+            text=f"Playing as {self.nickname}",
+            font=("Segoe UI", 10),
+            fg="#52606d",
+            bg="#f1f3f5",
+        )
+        self.player_label.pack(pady=(0, 10))
+
+        self.canvas = Canvas(
+            self.root,
+            width=GRID_WIDTH,
+            height=GRID_HEIGHT,
+            bg="#17212b",
+            highlightthickness=0,
+        )
+        self.canvas.pack(pady=5)
+        self.canvas.bind("<Configure>", lambda _event: self._draw_grid())
+
+        self.progress = StringVar()
+        Label(
+            self.root,
+            textvariable=self.progress,
+            font=("Segoe UI", 10, "bold"),
+            fg="#334155",
+            bg="#f1f3f5",
+        ).pack(pady=(7, 12))
+
+        guess_row = Frame(self.root, bg="#f1f3f5")
+        guess_row.pack(fill="x", padx=48)
+        self.guess_entry = Entry(guess_row, font=("Segoe UI", 12), relief="solid", bd=1)
+        self.guess_entry.pack(side="left", fill="x", expand=True, ipady=7)
+        self.guess_entry.bind("<Return>", lambda _event: self._submit_guess())
+        self.submit_button = Button(
+            guess_row,
+            text="Submit",
+            command=self._submit_guess,
+            font=("Segoe UI", 10, "bold"),
+            bg="#167c5a",
+            fg="white",
+            activebackground="#126448",
+            activeforeground="white",
+            relief="flat",
+            padx=14,
+            pady=8,
+        )
+        self.submit_button.pack(side="left", padx=(8, 0))
+
+        action_row = Frame(self.root, bg="#f1f3f5")
+        action_row.pack(pady=12)
+        self.reveal_button = Button(
+            action_row,
+            text="Reveal a piece",
+            command=self._reveal_piece,
+            font=("Segoe UI", 10),
+            relief="solid",
+            bd=1,
+            padx=14,
+            pady=8,
+        )
+        self.reveal_button.pack(side="left", padx=5)
+        self.skip_button = Button(
+            action_row,
+            text="Skip player",
+            command=self._skip_player,
+            font=("Segoe UI", 10),
+            relief="solid",
+            bd=1,
+            padx=14,
+            pady=8,
+        )
+        self.skip_button.pack(side="left", padx=5)
+
+        self.status = StringVar(value="Loading player photo...")
+        Label(
+            self.root,
+            textvariable=self.status,
+            font=("Segoe UI", 10),
+            fg="#334155",
+            bg="#f1f3f5",
+            wraplength=480,
+            justify="center",
+        ).pack(pady=(3, 5))
+        self.score = StringVar()
+        Label(
+            self.root,
+            textvariable=self.score,
+            font=("Segoe UI", 9),
+            fg="#64748b",
+            bg="#f1f3f5",
+        ).pack(pady=5)
+
+    def _begin_round(self) -> None:
+        player = self.engine.current_player
+        if player is None:
+            return
+        self.current_image = None
+        self.guess_entry.delete(0, "end")
+        self.guess_entry.config(state="normal")
+        self.submit_button.config(state="normal")
+        self.reveal_button.config(state="disabled")
+        self.skip_button.config(state="normal")
+        self.status.set("Loading player photo...")
+        self._draw_grid()
+        self._update_progress()
+        threading.Thread(target=self._load_image, args=(player,), daemon=True).start()
+
+    def _load_image(self, player: Player) -> None:
+        try:
+            self.image_queue.put((player, _read_image_bytes(player), None))
+        except (OSError, URLError, ValueError) as error:
+            self.image_queue.put((player, None, str(error)))
+
+    def _poll_image_queue(self) -> None:
+        if self.closed:
+            return
+        try:
+            player, image_bytes, error = self.image_queue.get_nowait()
+        except Empty:
+            self.root.after(120, self._poll_image_queue)
+            return
+        if player == self.engine.current_player and not self.engine.round_finished:
+            if image_bytes is not None:
+                try:
+                    with Image.open(io.BytesIO(image_bytes)) as image:
+                        self.current_image = ImageOps.fit(
+                            image.convert("RGB"), (GRID_WIDTH, GRID_HEIGHT)
+                        )
+                    self.status.set("Guess the player, reveal a piece, or skip.")
+                    self.reveal_button.config(state="normal")
+                    self._draw_grid()
+                except (OSError, ValueError) as image_error:
+                    self._image_error(str(image_error))
+            else:
+                self._image_error(error or "Unknown image error")
+        self.root.after(120, self._poll_image_queue)
+
+    def _image_error(self, error: str) -> None:
+        self.status.set(
+            "Photo unavailable. Check your connection or add a local image, then skip this player."
+        )
+        self.reveal_button.config(state="disabled")
+        self.canvas.delete("all")
+        self.canvas.create_text(
+            GRID_WIDTH // 2,
+            GRID_HEIGHT // 2,
+            text="PLAYER PHOTO UNAVAILABLE",
+            fill="#f1f5f9",
+            font=("Segoe UI", 13, "bold"),
+        )
+        self.root.title(f"NBA Face Puzzle | Photo error: {error[:80]}")
+
+    def _draw_grid(self) -> None:
+        if not hasattr(self, "canvas"):
+            return
+        width = max(self.canvas.winfo_width(), GRID_WIDTH)
+        height = max(self.canvas.winfo_height(), GRID_HEIGHT)
+        tile_width = width / 3
+        tile_height = height / 3
+        self.canvas.delete("all")
+        self.photo_tiles = []
+        for index in range(TILE_COUNT):
+            row, column = divmod(index, 3)
+            x0, y0 = column * tile_width, row * tile_height
+            x1, y1 = x0 + tile_width, y0 + tile_height
+            if self.current_image is not None and index in self.engine.revealed_tiles:
+                crop = self.current_image.crop(
+                    (
+                        round(column * GRID_WIDTH / 3),
+                        round(row * GRID_HEIGHT / 3),
+                        round((column + 1) * GRID_WIDTH / 3),
+                        round((row + 1) * GRID_HEIGHT / 3),
+                    )
+                )
+                tile = ImageTk.PhotoImage(crop)
+                self.photo_tiles.append(tile)
+                self.canvas.create_image(x0, y0, image=tile, anchor="nw")
+            else:
+                self.canvas.create_rectangle(
+                    x0,
+                    y0,
+                    x1,
+                    y1,
+                    fill="#263746",
+                    outline="#90a4ae",
+                    width=2,
+                )
+                self.canvas.create_text(
+                    (x0 + x1) / 2,
+                    (y0 + y1) / 2,
+                    text="?",
+                    fill="#d5e0e7",
+                    font=("Segoe UI", 24, "bold"),
+                )
+
+    def _update_progress(self) -> None:
+        self.progress.set(
+            f"Puzzle {self.engine.solved_count + 1}  |  "
+            f"{self.engine.revealed_count} of {TILE_COUNT} pieces revealed"
+        )
+        self.score.set(
+            f"Solved this session: {self.engine.solved_count}     "
+            f"Guesses this puzzle: {self.engine.round_guesses}"
+        )
+
+    def _submit_guess(self) -> None:
+        guess = self.guess_entry.get().strip()
+        if not guess:
+            self.status.set("Type a player name before submitting.")
+            self.guess_entry.focus_set()
+            return
+        if self.current_image is None:
+            self.status.set("Wait for the player photo to load, or skip this player.")
+            return
+        was_correct = self.engine.submit_guess(guess)
+        self._update_progress()
+        if was_correct:
+            player = self.engine.current_player
+            self.status.set(
+                f"Correct! It was {player.name}. You solved it in "
+                f"{self.engine.round_guesses} guesses with "
+                f"{self.engine.revealed_count} piece(s) revealed."
+            )
+            self.guess_entry.config(state="disabled")
+            self.submit_button.config(state="disabled")
+            self.reveal_button.config(state="disabled")
+            self.skip_button.config(state="disabled")
+            self.root.after(300, self._ask_play_again)
+        else:
+            self.status.set("Not quite. Try another spelling, reveal a piece, or skip.")
+
+    def _reveal_piece(self) -> None:
+        if self.engine.reveal_piece():
+            self._draw_grid()
+            self._update_progress()
+        if self.engine.revealed_count >= TILE_COUNT:
+            self.reveal_button.config(state="disabled")
+
+    def _skip_player(self) -> None:
+        self.engine.skip_player()
+        self.root.title("NBA Face Puzzle")
+        self._begin_round()
+
+    def _ask_play_again(self) -> None:
+        if messagebox.askyesno(
+            "Puzzle solved",
+            f"You have solved {self.engine.solved_count} puzzle(s). Play another round?",
+            parent=self.root,
+        ):
+            self.engine.start_round()
+            self._begin_round()
+        else:
+            self._finish_session()
+
+    def _finish_session(self) -> None:
+        try:
+            self.leaderboard.record(
+                self.nickname,
+                self.engine.solved_count,
+                self.engine.session_guesses,
+                self.engine.session_pieces,
+            )
+            save_message = (
+                f"\n\n{self.leaderboard.load_error}"
+                if self.leaderboard.load_error
+                else ""
+            )
+        except OSError as error:
+            save_message = f"\n\nCould not save leaderboard: {error}"
+        table = self.leaderboard.formatted_table()
+        messagebox.showinfo(
+            "Session leaderboard",
+            f"Session complete. Puzzles solved: {self.engine.solved_count}\n\n"
+            f"TOP 5\n{table}{save_message}",
+            parent=self.root,
+        )
+        self.close()
+
+    def close(self) -> None:
+        self.closed = True
+        self.root.destroy()
+
+
+def main() -> None:
+    root = Tk()
+    root.withdraw()
+    nickname = simpledialog.askstring(
+        "NBA Face Puzzle", "Enter your nickname:", parent=root
+    )
+    if nickname is None:
+        root.destroy()
+        return
+    nickname = nickname.strip() or "Player"
+    root.deiconify()
+    NBAPuzzleGame(root, nickname)
+    root.mainloop()
+
+
+if __name__ == "__main__":
+    main()
