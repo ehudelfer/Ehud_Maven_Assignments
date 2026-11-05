@@ -3,28 +3,36 @@
 let PLAYERS = [];
 
 const LEADERBOARD_KEY = "full-court-faceoff-leaderboard-v1";
+let apiBaseUrl = "";
+let remoteScores = null;
 const elements = Object.fromEntries(
   [
     "board", "photo-message", "round-label", "tile-count", "status", "guess-form",
-    "guess-input", "submit-button", "reveal-button", "skip-button", "reveal-answer-button",
+    "guess-input", "submit-button", "reveal-button", "skip-button", "reveal-answer-button", "hint-button",
     "photo-credit", "welcome-title", "round-actions",
     "next-button", "finish-button", "nickname-display", "solved-count", "guess-count",
-    "pieces-count", "leaderboard-rows", "name-overlay", "name-form", "nickname-input",
+    "pieces-count", "hints-count", "skips-count", "leaderboard-rows", "leaderboard-scope", "name-overlay",
+    "name-form", "nickname-input", "difficulty-input", "hint-overlay", "hint-options",
+    "close-hint-button",
     "final-score", "final-leaderboard", "session-finished", "new-session-button",
   ].map((id) => [id, document.getElementById(id)]),
 );
 
 const game = {
   nickname: "",
+  difficulty: "advanced",
   player: null,
   usedPlayers: new Set(),
   revealed: new Set(),
   round: 0,
   roundGuesses: 0,
-  sessionGuesses: 0,
-  solved: 0,
-  pieces: 0,
+  guessesMade: 0,
+  revealedPlayers: 0,
+  tilesRevealed: 0,
+  hintsUsed: 0,
+  skipsUsed: 0,
   imageUrl: "",
+  imageZoomed: false,
   photoReady: false,
   roundToken: 0,
   finished: false,
@@ -76,6 +84,63 @@ function imageUrl(player) {
   return player.image_url || `https://cdn.nba.com/headshots/nba/latest/1040x760/${player.id}.png`;
 }
 
+function zoomPhotoAroundContent(photo) {
+  try {
+    const sourceWidth = photo.naturalWidth;
+    const sourceHeight = photo.naturalHeight;
+    const probe = document.createElement("canvas");
+    probe.width = 128;
+    probe.height = 128;
+    const probeContext = probe.getContext("2d", { willReadFrequently: true });
+    probeContext.drawImage(photo, 0, 0, probe.width, probe.height);
+    const pixels = probeContext.getImageData(0, 0, probe.width, probe.height).data;
+    const cornerPoints = [[0, 0], [127, 0], [0, 127], [127, 127]];
+    const background = [0, 1, 2].map((channel) =>
+      Math.round(cornerPoints.reduce((total, [x, y]) => total + pixels[(y * 128 + x) * 4 + channel], 0) / 4));
+    let left = probe.width;
+    let top = probe.height;
+    let right = -1;
+    let bottom = -1;
+    for (let y = 0; y < probe.height; y += 1) {
+      for (let x = 0; x < probe.width; x += 1) {
+        const offset = (y * probe.width + x) * 4;
+        const distance = Math.abs(pixels[offset] - background[0])
+          + Math.abs(pixels[offset + 1] - background[1])
+          + Math.abs(pixels[offset + 2] - background[2]);
+        if (distance > 42) {
+          left = Math.min(left, x);
+          right = Math.max(right, x);
+          top = Math.min(top, y);
+          bottom = Math.max(bottom, y);
+        }
+      }
+    }
+    if (right < left || bottom < top) return null;
+
+    const centerX = ((left + right) / 2) * sourceWidth / probe.width;
+    const centerY = ((top + bottom) / 2) * sourceHeight / probe.height;
+    const targetAspect = 450 / 330;
+    const aspect = sourceWidth / sourceHeight;
+    let cropWidth = aspect > targetAspect ? sourceHeight * targetAspect : sourceWidth;
+    let cropHeight = cropWidth / targetAspect;
+    cropWidth /= 1.25;
+    cropHeight /= 1.25;
+    const cropX = centerX - cropWidth / 2;
+    const cropY = centerY - cropHeight / 2;
+
+    const output = document.createElement("canvas");
+    output.width = 450;
+    output.height = 330;
+    const context = output.getContext("2d");
+    context.fillStyle = `rgb(${background.join(",")})`;
+    context.fillRect(0, 0, output.width, output.height);
+    context.drawImage(photo, cropX, cropY, cropWidth, cropHeight, 0, 0, output.width, output.height);
+    return output.toDataURL("image/jpeg", 0.9);
+  } catch {
+    return null;
+  }
+}
+
 function renderPhotoCredit(player) {
   elements["photo-credit"].replaceChildren();
   if (!player?.attribution) {
@@ -111,8 +176,9 @@ function renderTiles() {
     tile.setAttribute("aria-hidden", "true");
     if (game.imageUrl) {
       tile.style.backgroundImage = `url("${game.imageUrl}")`;
-      tile.style.backgroundSize = "300% 300%";
-      tile.style.backgroundPosition = `${column * 50}% ${row * 50}%`;
+      tile.style.backgroundSize = game.imageZoomed ? "300% 300%" : "375% 375%";
+      const positionStep = game.imageZoomed ? 50 : 45.454545;
+      tile.style.backgroundPosition = `${column * positionStep}% ${row * positionStep}%`;
     }
     elements.board.append(tile);
   }
@@ -124,30 +190,39 @@ function renderTiles() {
 }
 
 function renderStats() {
-  elements["solved-count"].textContent = game.solved;
-  elements["guess-count"].textContent = game.sessionGuesses;
-  elements["pieces-count"].textContent = game.pieces;
+  elements["solved-count"].textContent = game.revealedPlayers;
+  elements["pieces-count"].textContent = game.tilesRevealed;
+  elements["guess-count"].textContent = game.guessesMade;
+  elements["hints-count"].textContent = game.hintsUsed;
+  elements["skips-count"].textContent = game.skipsUsed;
   elements["round-label"].textContent = `ROUND ${String(game.round).padStart(2, "0")}`;
 }
 
 function rankScores(scores) {
   return scores
-    .sort((left, right) => right.puzzles_solved - left.puzzles_solved
-      || left.guesses - right.guesses
-      || left.pieces - right.pieces
+    .sort((left, right) => right.revealed_players - left.revealed_players
+      || left.guesses_made - right.guesses_made
+      || left.tiles_revealed - right.tiles_revealed
+      || left.hints_used - right.hints_used
+      || left.skips_used - right.skips_used
       || left.nickname.localeCompare(right.nickname))
     .slice(0, 5);
 }
 
 function loadScores() {
+  if (remoteScores !== null) return rankScores([...remoteScores]);
   try {
     const parsed = JSON.parse(localStorage.getItem(LEADERBOARD_KEY) || "[]");
     if (!Array.isArray(parsed)) return [];
-    return rankScores(parsed.filter((score) =>
-      score && typeof score.nickname === "string"
-      && Number.isInteger(score.puzzles_solved) && score.puzzles_solved >= 0
-      && Number.isInteger(score.guesses) && score.guesses >= 0
-      && Number.isInteger(score.pieces) && score.pieces >= 0));
+    return rankScores(parsed.filter((score) => score && typeof score.nickname === "string").map((score) => ({
+      nickname: score.nickname,
+      difficulty: score.difficulty === "starters" ? "starters" : "advanced",
+      revealed_players: score.revealed_players ?? score.puzzles_solved ?? 0,
+      tiles_revealed: score.tiles_revealed ?? score.pieces ?? 0,
+      guesses_made: score.guesses_made ?? score.guesses ?? 0,
+      hints_used: score.hints_used ?? 0,
+      skips_used: score.skips_used ?? 0,
+    })).filter((score) => Object.values(score).slice(2).every((value) => Number.isInteger(value) && value >= 0)));
   } catch {
     return [];
   }
@@ -156,6 +231,14 @@ function loadScores() {
 function renderLeaderboard(target = elements["leaderboard-rows"]) {
   const scores = loadScores();
   target.replaceChildren();
+  const header = document.createElement("div");
+  header.className = "leader-row leader-header";
+  ["#", "PLAYER", "P", "T", "G", "H", "S"].forEach((label) => {
+    const cell = document.createElement("span");
+    cell.textContent = label;
+    header.append(cell);
+  });
+  target.append(header);
   if (scores.length === 0) {
     const empty = document.createElement("p");
     empty.className = "leader-empty";
@@ -172,24 +255,50 @@ function renderLeaderboard(target = elements["leaderboard-rows"]) {
     const name = document.createElement("span");
     name.className = "leader-name";
     name.textContent = score.nickname;
-    const solved = document.createElement("span");
-    solved.className = "leader-score";
-    solved.textContent = score.puzzles_solved;
-    row.append(rank, name, solved);
+    row.append(rank, name);
+    for (const value of [
+      score.revealed_players,
+      score.tiles_revealed,
+      score.guesses_made,
+      score.hints_used,
+      score.skips_used,
+    ]) {
+      const metric = document.createElement("span");
+      metric.className = "leader-score";
+      metric.textContent = value;
+      row.append(metric);
+    }
     target.append(row);
   });
 }
 
+async function loadSharedLeaderboard() {
+  if (!apiBaseUrl) return;
+  try {
+    const response = await fetch(`${apiBaseUrl}/api/leaderboard`, { cache: "no-store" });
+    if (!response.ok) throw new Error(`Shared score service returned ${response.status}.`);
+    const result = await response.json();
+    if (!Array.isArray(result.scores)) throw new Error("Shared score response was invalid.");
+    remoteScores = result.scores;
+  } catch {
+    remoteScores = null;
+  }
+}
+
 function beginRound() {
   game.finished = false;
-  if (game.usedPlayers.size >= PLAYERS.length) game.usedPlayers.clear();
-  const options = PLAYERS.filter((player) => !game.usedPlayers.has(player.id));
+  const playerPool = game.difficulty === "starters"
+    ? PLAYERS.filter((player) => Number.isFinite(player.career_ppg) && player.career_ppg >= 15)
+    : PLAYERS;
+  if (game.usedPlayers.size >= playerPool.length) game.usedPlayers.clear();
+  const options = playerPool.filter((player) => !game.usedPlayers.has(player.id));
   game.player = options[Math.floor(Math.random() * options.length)];
   game.usedPlayers.add(game.player.id);
   game.round += 1;
   game.roundGuesses = 0;
   game.revealed = new Set([Math.floor(Math.random() * 9)]);
   game.imageUrl = "";
+  game.imageZoomed = false;
   game.photoReady = false;
   game.roundToken += 1;
   const token = game.roundToken;
@@ -200,6 +309,7 @@ function beginRound() {
   elements["submit-button"].disabled = true;
   elements["reveal-button"].disabled = true;
   elements["reveal-answer-button"].disabled = true;
+  elements["hint-button"].disabled = true;
   elements["skip-button"].disabled = false;
   elements["round-actions"].hidden = true;
   setStatus("Loading player photo...");
@@ -210,12 +320,15 @@ function beginRound() {
   renderPhotoCredit(game.player);
   photo.onload = () => {
     if (token !== game.roundToken) return;
-    game.imageUrl = photo.src;
+    const zoomedPhoto = zoomPhotoAroundContent(photo);
+    game.imageUrl = zoomedPhoto || photo.src;
+    game.imageZoomed = Boolean(zoomedPhoto);
     game.photoReady = true;
     elements["guess-input"].disabled = false;
     elements["submit-button"].disabled = false;
     elements["reveal-button"].disabled = false;
     elements["reveal-answer-button"].disabled = false;
+    elements["hint-button"].disabled = false;
     setStatus("Your move.");
     renderTiles();
     elements["guess-input"].focus();
@@ -226,17 +339,21 @@ function beginRound() {
     elements["photo-message"].hidden = false;
     setStatus("Photo unavailable. Skip this player to continue.", "wrong");
   };
+  if (game.player.image_url) photo.crossOrigin = "anonymous";
   photo.src = imageUrl(game.player);
 }
 
 function startSession(nickname) {
   game.nickname = nickname.trim().slice(0, 24) || "Player";
+  game.difficulty = elements["difficulty-input"].value;
   game.usedPlayers.clear();
   game.round = 0;
   game.roundGuesses = 0;
-  game.sessionGuesses = 0;
-  game.solved = 0;
-  game.pieces = 0;
+  game.guessesMade = 0;
+  game.revealedPlayers = 0;
+  game.tilesRevealed = 0;
+  game.hintsUsed = 0;
+  game.skipsUsed = 0;
   game.finished = false;
   game.lost = false;
   game.sessionRecorded = false;
@@ -251,6 +368,7 @@ function revealTile() {
   if (!game.photoReady || game.revealed.size >= 9 || game.finished) return;
   const hidden = Array.from({ length: 9 }, (_, index) => index).filter((index) => !game.revealed.has(index));
   game.revealed.add(hidden[Math.floor(Math.random() * hidden.length)]);
+  game.tilesRevealed += 1;
   renderTiles();
   if (game.revealed.size === 9) elements["reveal-button"].disabled = true;
 }
@@ -265,15 +383,14 @@ function submitGuess(event) {
     return;
   }
   game.roundGuesses += 1;
-  game.sessionGuesses += 1;
+  game.guessesMade += 1;
   if (!matchesPlayer(guess, game.player)) {
     setStatus("Not this time. Try again or reveal another tile.", "wrong");
     elements["guess-input"].select();
     renderStats();
     return;
   }
-  game.solved += 1;
-  game.pieces += game.revealed.size;
+  game.revealedPlayers += 1;
   game.finished = true;
   setStatus(`That's ${game.player.name}. ${game.roundGuesses} guesses, ${game.revealed.size} tiles.`, "correct");
   elements["guess-input"].disabled = true;
@@ -281,51 +398,108 @@ function submitGuess(event) {
   elements["reveal-button"].disabled = true;
   elements["skip-button"].disabled = true;
   elements["reveal-answer-button"].disabled = true;
+  elements["hint-button"].disabled = true;
   elements["round-actions"].hidden = false;
   renderStats();
 }
 
 function skipPlayer() {
   if (game.finished) return;
-  game.pieces += game.revealed.size;
+  game.skipsUsed += 1;
   beginRound();
+}
+
+function requestHint() {
+  if (!game.photoReady || !game.player || game.finished) return;
+  const playerPool = game.difficulty === "starters"
+    ? PLAYERS.filter((player) => Number.isFinite(player.career_ppg) && player.career_ppg >= 15)
+    : PLAYERS;
+  const distractors = playerPool.filter((player) => player.id !== game.player.id);
+  if (distractors.length < 2) return;
+  game.hintsUsed += 1;
+  renderStats();
+  const choices = [
+    ...distractors.sort(() => Math.random() - 0.5).slice(0, 2),
+    game.player,
+  ].sort(() => Math.random() - 0.5);
+  elements["hint-options"].replaceChildren();
+  choices.forEach((player, index) => {
+    const option = document.createElement("button");
+    option.type = "button";
+    option.className = "button hint-option";
+    option.textContent = `${index + 1}. ${player.name}`;
+    option.addEventListener("click", () => {
+      elements["hint-overlay"].hidden = true;
+      elements["guess-input"].value = player.name;
+      elements["guess-form"].requestSubmit();
+    });
+    elements["hint-options"].append(option);
+  });
+  elements["hint-overlay"].hidden = false;
 }
 
 function revealAnswer() {
   if (!game.photoReady || !game.player || game.finished) return;
   game.finished = true;
   game.lost = true;
-  game.pieces += game.revealed.size;
   setStatus(`Answer: ${game.player.name}. You lost this puzzle.`, "wrong");
   elements["guess-input"].disabled = true;
   elements["submit-button"].disabled = true;
   elements["reveal-button"].disabled = true;
   elements["skip-button"].disabled = true;
   elements["reveal-answer-button"].disabled = true;
+  elements["hint-button"].disabled = true;
   renderStats();
   finishSession();
 }
 
-function finishSession() {
+async function finishSession() {
   if (game.finished !== true || !game.nickname || game.sessionRecorded) return;
   game.sessionRecorded = true;
-  const scores = loadScores();
-  scores.push({
+  const session = {
     nickname: game.nickname,
-    puzzles_solved: game.solved,
-    guesses: game.sessionGuesses,
-    pieces: game.pieces,
-  });
+    difficulty: game.difficulty,
+    revealed_players: game.revealedPlayers,
+    tiles_revealed: game.tilesRevealed,
+    guesses_made: game.guessesMade,
+    hints_used: game.hintsUsed,
+    skips_used: game.skipsUsed,
+  };
+  let saveError = "";
   try {
-    localStorage.setItem(LEADERBOARD_KEY, JSON.stringify(rankScores(scores)));
+    if (apiBaseUrl) {
+      const response = await fetch(`${apiBaseUrl}/api/sessions`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(session),
+      });
+      if (!response.ok) throw new Error(`Shared score service returned ${response.status}.`);
+      const result = await response.json();
+      if (!Array.isArray(result.scores)) throw new Error("Shared score response was invalid.");
+      remoteScores = result.scores;
+      localStorage.setItem(LEADERBOARD_KEY, JSON.stringify(remoteScores));
+    } else {
+      const scores = loadScores();
+      scores.push(session);
+      localStorage.setItem(LEADERBOARD_KEY, JSON.stringify(rankScores(scores)));
+    }
   } catch {
-    setStatus("Session finished, but browser storage is unavailable.", "wrong");
+    saveError = "Score sync failed; this result is only saved in this browser.";
+    remoteScores = null;
+    try {
+      const scores = loadScores();
+      scores.push(session);
+      localStorage.setItem(LEADERBOARD_KEY, JSON.stringify(rankScores(scores)));
+    } catch {
+      saveError = "Browser storage is unavailable; this result could not be saved.";
+    }
   }
   game.roundToken += 1;
   elements["final-score"].textContent = game.lost
-    ? `${game.nickname} revealed ${game.player.name} and lost. Session score: ${game.solved} solved, ${game.sessionGuesses} guesses, ${game.pieces} tiles.`
-    : `${game.nickname} solved ${game.solved} ${game.solved === 1 ? "puzzle" : "puzzles"} in ${game.sessionGuesses} guesses, using ${game.pieces} tiles.`;
+    ? `${game.nickname} revealed ${game.player.name} and lost. ${game.revealedPlayers} players, ${game.tilesRevealed} tiles, ${game.guessesMade} guesses, ${game.hintsUsed} hints, ${game.skipsUsed} skips.`
+    : `${game.nickname}: ${game.revealedPlayers} players, ${game.tilesRevealed} tiles, ${game.guessesMade} guesses, ${game.hintsUsed} hints, ${game.skipsUsed} skips.`;
   elements["session-finished"].hidden = false;
+  if (saveError) elements["final-score"].textContent += ` ${saveError}`;
   renderLeaderboard(elements["final-leaderboard"]);
   renderLeaderboard();
 }
@@ -338,8 +512,13 @@ elements["guess-form"].addEventListener("submit", submitGuess);
 elements["reveal-button"].addEventListener("click", revealTile);
 elements["skip-button"].addEventListener("click", skipPlayer);
 elements["reveal-answer-button"].addEventListener("click", revealAnswer);
+elements["hint-button"].addEventListener("click", requestHint);
+elements["close-hint-button"].addEventListener("click", () => {
+  elements["hint-overlay"].hidden = true;
+});
+elements["reveal-answer-button"].addEventListener("click", revealAnswer);
 elements["next-button"].addEventListener("click", beginRound);
-elements["finish-button"].addEventListener("click", finishSession);
+elements["finish-button"].addEventListener("click", () => { void finishSession(); });
 elements["new-session-button"].addEventListener("click", () => {
   elements["session-finished"].hidden = true;
   elements["nickname-input"].value = game.nickname;
@@ -352,6 +531,14 @@ async function initializeGame() {
   startButton.disabled = true;
   elements["welcome-title"].textContent = "Loading player roster...";
   try {
+    const configResponse = await fetch("api-config.json");
+    if (configResponse.ok) {
+      const config = await configResponse.json();
+      apiBaseUrl = typeof config.apiBaseUrl === "string" ? config.apiBaseUrl.trim().replace(/\/$/, "") : "";
+    }
+    if (!apiBaseUrl && ["localhost", "127.0.0.1"].includes(location.hostname)) {
+      apiBaseUrl = location.origin;
+    }
     const response = await fetch("players.json");
     if (!response.ok) throw new Error(`Roster request failed (${response.status}).`);
     const roster = await response.json();
@@ -362,6 +549,10 @@ async function initializeGame() {
       throw new Error("Roster contains duplicate player IDs.");
     }
     PLAYERS = roster;
+    await loadSharedLeaderboard();
+    elements["leaderboard-scope"].textContent = apiBaseUrl && remoteScores !== null
+      ? "SHARED"
+      : "THIS BROWSER";
     elements["welcome-title"].textContent = "Who's playing?";
     startButton.disabled = false;
     renderLeaderboard();

@@ -6,6 +6,8 @@ from dataclasses import dataclass
 from difflib import SequenceMatcher
 import io
 import json
+import math
+import os
 import random
 import re
 import threading
@@ -17,7 +19,7 @@ from tkinter import Button, Canvas, Entry, Frame, Label, StringVar, Tk, messageb
 from urllib.error import URLError
 from urllib.request import Request, urlopen
 
-from PIL import Image, ImageOps, ImageTk
+from PIL import Image, ImageChops, ImageOps, ImageTk
 
 
 WINDOW_WIDTH = 560
@@ -39,6 +41,7 @@ class Player:
     aliases: tuple[str, ...] = ()
     image_url_override: str | None = None
     attribution: dict[str, str] | None = None
+    career_ppg: float | None = None
 
     @property
     def image_url(self) -> str:
@@ -79,6 +82,13 @@ def load_player_roster(path: Path = PLAYER_DATA_PATH) -> tuple[Player, ...]:
                     aliases=tuple(alias for alias in aliases if isinstance(alias, str)),
                     image_url_override=record.get("image_url"),
                     attribution=record.get("attribution"),
+                    career_ppg=(
+                        float(record["career_ppg"])
+                        if isinstance(record.get("career_ppg"), (int, float))
+                        and not isinstance(record.get("career_ppg"), bool)
+                        and math.isfinite(record["career_ppg"])
+                        else None
+                    ),
                 )
             )
     if len(players) < 100:
@@ -121,20 +131,48 @@ def names_match(guess: str, player: Player) -> bool:
 class GameEngine:
     """Track puzzle rounds, guesses, reveals, and session totals."""
 
-    def __init__(self, players: tuple[Player, ...] = PLAYER_ROSTER) -> None:
+    def __init__(
+        self,
+        players: tuple[Player, ...] = PLAYER_ROSTER,
+        difficulty: str = "advanced",
+    ) -> None:
         if not players:
             raise ValueError("The game needs at least one player.")
-        self.players = players
+        if difficulty not in {"starters", "advanced"}:
+            raise ValueError("Difficulty must be 'starters' or 'advanced'.")
+        self.difficulty = difficulty
+        self.players = (
+            tuple(player for player in players if player.career_ppg is not None and player.career_ppg >= 15.0)
+            if difficulty == "starters"
+            else players
+        )
+        if not self.players:
+            raise ValueError("No players meet the Starters mode scoring threshold.")
         self._random = random.Random()
-        self._available_players = list(players)
+        self._available_players = list(self.players)
         self.current_player: Player | None = None
         self.revealed_tiles: set[int] = set()
         self.round_guesses = 0
-        self.session_guesses = 0
-        self.session_pieces = 0
-        self.solved_count = 0
+        self.revealed_players = 0
+        self.tiles_revealed = 0
+        self.guesses_made = 0
+        self.hints_used = 0
+        self.skips_used = 0
+        self.lost = False
         self.round_finished = False
         self.start_round()
+
+    @property
+    def solved_count(self) -> int:
+        return self.revealed_players
+
+    @property
+    def session_guesses(self) -> int:
+        return self.guesses_made
+
+    @property
+    def session_pieces(self) -> int:
+        return self.tiles_revealed
 
     @property
     def revealed_count(self) -> int:
@@ -155,71 +193,115 @@ class GameEngine:
             return False
         hidden_tiles = set(range(TILE_COUNT)) - self.revealed_tiles
         self.revealed_tiles.add(self._random.choice(tuple(hidden_tiles)))
+        self.tiles_revealed += 1
         return True
+
+    def request_hint(self) -> tuple[Player, Player, Player]:
+        if self.round_finished or self.current_player is None:
+            raise ValueError("Hints are only available during an active round.")
+        distractors = [player for player in self.players if player != self.current_player]
+        if len(distractors) < 2:
+            raise ValueError("The player pool needs at least three players for hints.")
+        self.hints_used += 1
+        choices = self._random.sample(distractors, 2) + [self.current_player]
+        self._random.shuffle(choices)
+        return tuple(choices)  # type: ignore[return-value]
 
     def submit_guess(self, guess: str) -> bool:
         if self.round_finished or self.current_player is None or not guess.strip():
             return False
         self.round_guesses += 1
-        self.session_guesses += 1
+        self.guesses_made += 1
         if not names_match(guess, self.current_player):
             return False
-        self.solved_count += 1
-        self.session_pieces += self.revealed_count
+        self.revealed_players += 1
         self.round_finished = True
         return True
 
     def reveal_answer(self) -> Player | None:
         if self.round_finished:
             return None
-        self.session_pieces += self.revealed_count
+        self.lost = True
         self.round_finished = True
         return self.current_player
 
     def skip_player(self) -> Player:
         if not self.round_finished:
-            self.session_pieces += self.revealed_count
+            self.skips_used += 1
         return self.start_round()
+
+    def session_record(self, nickname: str) -> dict[str, int | str]:
+        return {
+            "nickname": nickname.strip() or "Player",
+            "difficulty": self.difficulty,
+            "revealed_players": self.revealed_players,
+            "tiles_revealed": self.tiles_revealed,
+            "guesses_made": self.guesses_made,
+            "hints_used": self.hints_used,
+            "skips_used": self.skips_used,
+        }
 
 
 class LeaderboardManager:
     """Read and update the persistent top-five session scores."""
 
-    def __init__(self, path: Path = LEADERBOARD_PATH) -> None:
+    def __init__(self, path: Path = LEADERBOARD_PATH, api_url: str | None = None) -> None:
         self.path = path
+        self.api_url = (api_url if api_url is not None else os.environ.get("NBA_PUZZLE_API_URL", "")).rstrip("/")
         self.load_error: str | None = None
         self.scores = self._load()
 
+    @classmethod
+    def _normalize_scores(cls, data: object) -> list[dict[str, int | str]]:
+        if not isinstance(data, list):
+            return []
+        scores = []
+        for entry in data:
+            if not isinstance(entry, dict):
+                continue
+            name = entry.get("nickname")
+            revealed = entry.get("revealed_players", entry.get("puzzles_solved"))
+            tiles = entry.get("tiles_revealed", entry.get("pieces"))
+            guesses = entry.get("guesses_made", entry.get("guesses"))
+            hints = entry.get("hints_used", 0)
+            skips = entry.get("skips_used", 0)
+            difficulty = entry.get("difficulty", "advanced")
+            if (
+                isinstance(name, str)
+                and name.strip()
+                and difficulty in {"starters", "advanced"}
+                and all(
+                    isinstance(value, int) and not isinstance(value, bool) and value >= 0
+                    for value in (revealed, tiles, guesses, hints, skips)
+                )
+            ):
+                scores.append(
+                    {
+                        "nickname": name.strip(),
+                        "difficulty": difficulty,
+                        "revealed_players": revealed,
+                        "tiles_revealed": tiles,
+                        "guesses_made": guesses,
+                        "hints_used": hints,
+                        "skips_used": skips,
+                    }
+                )
+        return cls._rank(scores)[:5]
+
     def _load(self) -> list[dict[str, int | str]]:
+        if self.api_url:
+            try:
+                request = Request(f"{self.api_url}/api/leaderboard")
+                with urlopen(request, timeout=3) as response:
+                    data = json.loads(response.read().decode("utf-8"))
+                return self._normalize_scores(data.get("scores") if isinstance(data, dict) else None)
+            except (OSError, UnicodeError, json.JSONDecodeError, ValueError) as error:
+                self.load_error = f"Shared leaderboard unavailable ({error}); using this computer's file."
         if not self.path.exists():
             return []
         try:
             data = json.loads(self.path.read_text(encoding="utf-8"))
-            if not isinstance(data, list):
-                raise ValueError("Leaderboard data must be a JSON list.")
-            scores = []
-            for entry in data:
-                if not isinstance(entry, dict):
-                    continue
-                name = entry.get("nickname")
-                solved = entry.get("puzzles_solved")
-                guesses = entry.get("guesses")
-                pieces = entry.get("pieces")
-                if (
-                    isinstance(name, str)
-                    and name.strip()
-                    and all(isinstance(value, int) and not isinstance(value, bool) and value >= 0
-                            for value in (solved, guesses, pieces))
-                ):
-                    scores.append(
-                        {
-                            "nickname": name.strip(),
-                            "puzzles_solved": solved,
-                            "guesses": guesses,
-                            "pieces": pieces,
-                        }
-                    )
-            return self._rank(scores)[:5]
+            return self._normalize_scores(data)
         except (OSError, UnicodeError, json.JSONDecodeError, ValueError) as error:
             self.load_error = f"The saved leaderboard could not be read ({error}). A new one will be created."
             return []
@@ -229,25 +311,36 @@ class LeaderboardManager:
         return sorted(
             scores,
             key=lambda score: (
-                -int(score["puzzles_solved"]),
-                int(score["guesses"]),
-                int(score["pieces"]),
+                -int(score["revealed_players"]),
+                int(score["guesses_made"]),
+                int(score["tiles_revealed"]),
+                int(score["hints_used"]),
+                int(score["skips_used"]),
                 str(score["nickname"]).casefold(),
             ),
         )
 
-    def record(
-        self, nickname: str, puzzles_solved: int, guesses: int, pieces: int
-    ) -> None:
-        self.scores.append(
-            {
-                "nickname": nickname.strip(),
-                "puzzles_solved": puzzles_solved,
-                "guesses": guesses,
-                "pieces": pieces,
-            }
-        )
-        self.scores = self._rank(self.scores)[:5]
+    def record(self, session: dict[str, int | str]) -> None:
+        normalized_session = self._normalize_scores([session])
+        if not normalized_session:
+            raise ValueError("Session score is incomplete or invalid.")
+        if self.api_url:
+            try:
+                body = json.dumps(normalized_session[0]).encode("utf-8")
+                request = Request(
+                    f"{self.api_url}/api/sessions",
+                    data=body,
+                    headers={"Content-Type": "application/json"},
+                    method="POST",
+                )
+                with urlopen(request, timeout=3) as response:
+                    data = json.loads(response.read().decode("utf-8"))
+                if isinstance(data, dict):
+                    self.scores = self._normalize_scores(data.get("scores"))
+                    return
+            except (OSError, UnicodeError, json.JSONDecodeError, ValueError) as error:
+                self.load_error = f"Shared leaderboard save failed ({error}); saved locally instead."
+        self.scores = self._rank([*self.scores, normalized_session[0]])[:5]
         self.path.parent.mkdir(parents=True, exist_ok=True)
         temporary_path = self.path.with_suffix(self.path.suffix + ".tmp")
         temporary_path.write_text(json.dumps(self.scores, indent=2), encoding="utf-8")
@@ -256,12 +349,13 @@ class LeaderboardManager:
     def formatted_table(self) -> str:
         if not self.scores:
             return "No scores recorded yet."
-        rows = ["Rank  Player             Solved  Guesses  Pieces", "-" * 53]
+        rows = ["Rank  Player             Mode      Solved  Tiles  Guesses  Hints  Skips", "-" * 73]
         for rank, score in enumerate(self.scores, start=1):
             rows.append(
-                f"{rank:<5} {str(score['nickname'])[:18]:<18} "
-                f"{int(score['puzzles_solved']):>6}  {int(score['guesses']):>7}  "
-                f"{int(score['pieces']):>6}"
+            f"{rank:<5} {str(score['nickname'])[:18]:<18} {str(score['difficulty']):<9} "
+            f"{int(score['revealed_players']):>6} {int(score['tiles_revealed']):>6} "
+            f"{int(score['guesses_made']):>7} {int(score['hints_used']):>6} "
+            f"{int(score['skips_used']):>6}"
             )
         return "\n".join(rows)
 
@@ -292,13 +386,60 @@ def _read_image_bytes(player: Player) -> bytes:
     return image_bytes
 
 
+def zoom_face_image(image: Image.Image, output_size: tuple[int, int], zoom: float = 1.25) -> Image.Image:
+    """Trim to visible content, center on it, then crop 25% closer."""
+    if zoom < 1:
+        raise ValueError("Zoom must be at least 1.0.")
+    rgb_image = ImageOps.exif_transpose(image).convert("RGB")
+    thumbnail = ImageOps.contain(rgb_image, (128, 128))
+    corners = [
+        thumbnail.getpixel((0, 0)),
+        thumbnail.getpixel((thumbnail.width - 1, 0)),
+        thumbnail.getpixel((0, thumbnail.height - 1)),
+        thumbnail.getpixel((thumbnail.width - 1, thumbnail.height - 1)),
+    ]
+    background = tuple(sorted(corner[channel] for corner in corners)[len(corners) // 2]
+                       for channel in range(3))
+    difference = ImageChops.difference(
+        thumbnail,
+        Image.new("RGB", thumbnail.size, background),
+    ).convert("L")
+    content = difference.point(lambda value: 255 if value > 20 else 0).getbbox()
+    if content:
+        center_x = (content[0] + content[2]) / 2 * rgb_image.width / thumbnail.width
+        center_y = (content[1] + content[3]) / 2 * rgb_image.height / thumbnail.height
+    else:
+        center_x, center_y = rgb_image.width / 2, rgb_image.height / 2
+
+    aspect = output_size[0] / output_size[1]
+    if rgb_image.width / rgb_image.height > aspect:
+        crop_height = rgb_image.height / zoom
+        crop_width = crop_height * aspect
+    else:
+        crop_width = rgb_image.width / zoom
+        crop_height = crop_width / aspect
+    left = round(center_x - crop_width / 2)
+    top = round(center_y - crop_height / 2)
+    crop_width_px = round(crop_width)
+    crop_height_px = round(crop_height)
+    crop = Image.new("RGB", (crop_width_px, crop_height_px), background)
+    source_box = (
+        max(left, 0),
+        max(top, 0),
+        min(left + crop_width_px, rgb_image.width),
+        min(top + crop_height_px, rgb_image.height),
+    )
+    crop.paste(rgb_image.crop(source_box), (source_box[0] - left, source_box[1] - top))
+    return crop.resize(output_size, Image.Resampling.LANCZOS)
+
+
 class NBAPuzzleGame:
     """Tkinter interface for the NBA face-tile guessing game."""
 
-    def __init__(self, root: Tk, nickname: str) -> None:
+    def __init__(self, root: Tk, nickname: str, difficulty: str = "advanced") -> None:
         self.root = root
         self.nickname = nickname
-        self.engine = GameEngine()
+        self.engine = GameEngine(difficulty=difficulty)
         self.leaderboard = LeaderboardManager()
         self.image_queue: Queue[tuple[Player, bytes | None, str | None]] = Queue()
         self.current_image: Image.Image | None = None
@@ -407,6 +548,17 @@ class NBAPuzzleGame:
             pady=8,
         )
         self.reveal_answer_button.pack(side="left", padx=5)
+        self.hint_button = Button(
+            action_row,
+            text="Get hint",
+            command=self._get_hint,
+            font=("Segoe UI", 10),
+            relief="solid",
+            bd=1,
+            padx=14,
+            pady=8,
+        )
+        self.hint_button.pack(side="left", padx=5)
 
         self.status = StringVar(value="Loading player photo...")
         Label(
@@ -448,7 +600,9 @@ class NBAPuzzleGame:
         self.submit_button.config(state="normal")
         self.reveal_button.config(state="disabled")
         self.reveal_answer_button.config(state="disabled")
+        self.hint_button.config(state="disabled")
         self.skip_button.config(state="normal")
+        self.root.title(f"NBA Face Puzzle - {self.engine.difficulty.title()} mode")
         self.photo_credit.set("PLAYER PHOTOS: NBA.COM")
         if player.attribution:
             credit = player.attribution.get("credit", "Wikimedia Commons")
@@ -480,12 +634,11 @@ class NBAPuzzleGame:
             if image_bytes is not None:
                 try:
                     with Image.open(io.BytesIO(image_bytes)) as image:
-                        self.current_image = ImageOps.fit(
-                            image.convert("RGB"), (GRID_WIDTH, GRID_HEIGHT)
-                        )
+                        self.current_image = zoom_face_image(image, (GRID_WIDTH, GRID_HEIGHT))
                     self.status.set("Guess the player, reveal a piece, or skip.")
                     self.reveal_button.config(state="normal")
                     self.reveal_answer_button.config(state="normal")
+                    self.hint_button.config(state="normal")
                     self._draw_grid()
                 except (OSError, ValueError) as image_error:
                     self._image_error(str(image_error))
@@ -498,6 +651,7 @@ class NBAPuzzleGame:
             "Photo unavailable. Check your connection or add a local image, then skip this player."
         )
         self.reveal_button.config(state="disabled")
+        self.hint_button.config(state="disabled")
         self.canvas.delete("all")
         self.canvas.create_text(
             GRID_WIDTH // 2,
@@ -560,12 +714,13 @@ class NBAPuzzleGame:
 
     def _update_progress(self) -> None:
         self.progress.set(
-            f"Puzzle {self.engine.solved_count + 1}  |  "
+            f"{self.engine.difficulty.title()} mode  |  Round {self.engine.revealed_players + 1}  |  "
             f"{self.engine.revealed_count} of {TILE_COUNT} pieces revealed"
         )
         self.score.set(
-            f"Solved this session: {self.engine.solved_count}     "
-            f"Guesses this puzzle: {self.engine.round_guesses}"
+            f"Players: {self.engine.revealed_players}  |  Tiles: {self.engine.tiles_revealed}  |  "
+            f"Guesses: {self.engine.guesses_made}  |  Hints: {self.engine.hints_used}  |  "
+            f"Skips: {self.engine.skips_used}"
         )
 
     def _submit_guess(self) -> None:
@@ -590,6 +745,7 @@ class NBAPuzzleGame:
             self.submit_button.config(state="disabled")
             self.reveal_button.config(state="disabled")
             self.reveal_answer_button.config(state="disabled")
+            self.hint_button.config(state="disabled")
             self.skip_button.config(state="disabled")
             self.root.after(300, self._ask_play_again)
         else:
@@ -602,6 +758,27 @@ class NBAPuzzleGame:
         if self.engine.revealed_count >= TILE_COUNT:
             self.reveal_button.config(state="disabled")
 
+    def _get_hint(self) -> None:
+        try:
+            choices = self.engine.request_hint()
+        except ValueError as error:
+            self.status.set(str(error))
+            return
+        options = "\n".join(f"{index}. {player.name}" for index, player in enumerate(choices, start=1))
+        self._update_progress()
+        selection = simpledialog.askinteger(
+            "Three-choice hint",
+            f"One answer is correct. Choose a number:\n\n{options}",
+            minvalue=1,
+            maxvalue=3,
+            parent=self.root,
+        )
+        if selection is None:
+            return
+        self.guess_entry.delete(0, "end")
+        self.guess_entry.insert(0, choices[selection - 1].name)
+        self._submit_guess()
+
     def _reveal_answer(self) -> None:
         player = self.engine.reveal_answer()
         if player is None:
@@ -611,6 +788,7 @@ class NBAPuzzleGame:
         self.submit_button.config(state="disabled")
         self.reveal_button.config(state="disabled")
         self.reveal_answer_button.config(state="disabled")
+        self.hint_button.config(state="disabled")
         self.skip_button.config(state="disabled")
         self._update_progress()
         self.root.after(150, self._finish_session)
@@ -633,12 +811,7 @@ class NBAPuzzleGame:
 
     def _finish_session(self) -> None:
         try:
-            self.leaderboard.record(
-                self.nickname,
-                self.engine.solved_count,
-                self.engine.session_guesses,
-                self.engine.session_pieces,
-            )
+            self.leaderboard.record(self.engine.session_record(self.nickname))
             save_message = (
                 f"\n\n{self.leaderboard.load_error}"
                 if self.leaderboard.load_error
@@ -670,8 +843,22 @@ def main() -> None:
         root.destroy()
         return
     nickname = nickname.strip() or "Player"
+    while True:
+        difficulty = simpledialog.askstring(
+            "Choose difficulty",
+            "Enter Starters (15+ career PPG) or Advanced (all players):",
+            initialvalue="advanced",
+            parent=root,
+        )
+        if difficulty is None:
+            root.destroy()
+            return
+        difficulty = difficulty.strip().casefold()
+        if difficulty in {"starters", "advanced"}:
+            break
+        messagebox.showerror("Choose difficulty", "Enter either Starters or Advanced.", parent=root)
     root.deiconify()
-    NBAPuzzleGame(root, nickname)
+    NBAPuzzleGame(root, nickname, difficulty)
     root.mainloop()
 
 

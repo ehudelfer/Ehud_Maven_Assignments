@@ -67,6 +67,9 @@
           <button class="button button-quiet" id="reveal-answer-button" type="button" disabled>
             Reveal answer
           </button>
+          <button class="button button-quiet" id="hint-button" type="button" disabled>
+            Get hint
+          </button>
         </div>
 
         <div class="round-actions" id="round-actions" hidden>
@@ -82,9 +85,11 @@
         </section>
 
         <section class="stats-block" aria-label="Current session statistics">
-          <div class="stat-line"><span>Solved</span><strong id="solved-count">0</strong></div>
+          <div class="stat-line"><span>Players</span><strong id="solved-count">0</strong></div>
+          <div class="stat-line"><span>Tiles</span><strong id="pieces-count">0</strong></div>
           <div class="stat-line"><span>Guesses</span><strong id="guess-count">0</strong></div>
-          <div class="stat-line"><span>Tiles used</span><strong id="pieces-count">0</strong></div>
+          <div class="stat-line"><span>Hints</span><strong id="hints-count">0</strong></div>
+          <div class="stat-line"><span>Skips</span><strong id="skips-count">0</strong></div>
         </section>
 
         <section class="leaderboard" aria-labelledby="leaderboard-title">
@@ -93,7 +98,7 @@
               <p class="eyebrow">PERSONAL BESTS</p>
               <h2 id="leaderboard-title">Top five</h2>
             </div>
-            <span class="local-label">THIS BROWSER</span>
+            <span class="local-label" id="leaderboard-scope">THIS BROWSER</span>
           </div>
           <div id="leaderboard-rows" class="leaderboard-rows"></div>
         </section>
@@ -108,8 +113,22 @@
         <h2 id="welcome-title">Who's playing?</h2>
         <label for="nickname-input">Nickname</label>
         <input id="nickname-input" name="nickname" type="text" maxlength="24" autocomplete="nickname" required />
+        <label for="difficulty-input">Difficulty</label>
+        <select id="difficulty-input" name="difficulty">
+          <option value="starters">Starters · 15+ career PPG</option>
+          <option value="advanced" selected>Advanced · all players</option>
+        </select>
         <button class="button button-primary" type="submit">Start game <span aria-hidden="true">↗</span></button>
       </form>
+    </div>
+
+    <div class="overlay" id="hint-overlay" role="dialog" aria-modal="true" aria-labelledby="hint-title" hidden>
+      <div class="name-dialog">
+        <p class="eyebrow">ONE ANSWER IS CORRECT</p>
+        <h2 id="hint-title">Choose a player</h2>
+        <div id="hint-options" class="hint-options"></div>
+        <button class="button button-quiet" id="close-hint-button" type="button">Close</button>
+      </div>
     </div>
 
     <section class="session-finished" id="session-finished" aria-labelledby="finished-title" hidden>

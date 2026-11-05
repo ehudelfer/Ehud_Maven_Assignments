@@ -51,7 +51,7 @@ The program tries YuNet first and falls back to OpenCV if it cannot detect a fac
 
 Play the [NBA Face Puzzle in your browser](https://ehudelfer.github.io/Ehud_Maven_Assignments/). The desktop Python source is [nba_puzzle_game.py](nba_puzzle_game.py).
 
-To publish without a personal access token, open **Settings > Pages** on GitHub. Under **Build and deployment**, choose **Deploy from a branch**, select branch `main` and folder `/docs`, then save. GitHub Pages will publish the browser game from the root `docs` folder and update it when changes are pushed. The share link above works after the first deployment completes. The browser leaderboard is saved on each player's device; it is not shared across players.
+To publish without a personal access token, open **Settings > Pages** on GitHub. Under **Build and deployment**, choose **Deploy from a branch**, select branch `main` and folder `/docs`, then save. GitHub Pages publishes the browser game from `/docs` and updates it when changes are pushed.
 
 Start the Tkinter game with the Python environment that has Pillow installed:
 
@@ -59,7 +59,24 @@ Start the Tkinter game with the Python environment that has Pillow installed:
 python nba_puzzle_game.py
 ```
 
-Enter a nickname, then guess the NBA player shown by the revealed face tiles. Submit guesses with Enter, reveal more tiles, or skip to another player. The shared roster has 100 current and past players. Reveal answer ends the session as a loss and records the score. Most headshots download from the NBA CDN; Magic Johnson's replacement portrait is credited in-game to Daniel Benavides under CC BY 2.0. To use your own desktop images, place them in `nba_player_images` beside the script and name each file with the player's name normalized to lowercase letters and digits, such as `lebronjames.jpg`. The top-five desktop leaderboard is stored in `leaderboard.json` beside the script; browser scores are saved per device.
+Enter a nickname and choose a mode. **Starters** uses players with at least 15.0 career PPG; **Advanced** uses the full 100-player roster. Reveal tiles, submit a name, request a three-choice hint, skip, or reveal the answer to end the session as a loss. Session summaries and top-five tables track players, extra tiles, guesses, hints, and skips. Most headshots download from the NBA CDN; Magic Johnson's portrait links to its Daniel Benavides / CC BY 2.0 attribution.
+
+For local desktop/browser score synchronization, start the shared service from the repository root:
+
+```powershell
+python nba_game_server.py
+```
+
+Open `http://127.0.0.1:8000` for the browser game. Start the desktop game with the same API URL:
+
+```powershell
+$env:NBA_PUZZLE_API_URL = "http://127.0.0.1:8000"
+python "Ehud's_Programs\nba_puzzle_game.py"
+```
+
+For the public GitHub Pages game to share scores across devices, host `nba_game_server.py` at a public HTTPS URL with persistent storage, then set `apiBaseUrl` in `docs/api-config.json` to that URL and push the update. Set `NBA_PUZZLE_ALLOWED_ORIGINS` on the server to the Pages origin if using a custom domain. The API has no account authentication; it validates score fields, limits requests per IP, and keeps the top five. Without a configured API URL, browser scores remain local to each browser and desktop scores remain in `leaderboard.json`.
+
+To use your own desktop images, place them in `nba_player_images` beside the script and name each file with the player's name normalized to lowercase letters and digits, such as `lebronjames.jpg`.
 
 ## Test
 
