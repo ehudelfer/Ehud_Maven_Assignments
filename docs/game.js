@@ -139,8 +139,10 @@ function renderTiles() {
     if (game.imageUrl) {
       tile.style.backgroundImage = `url("${game.imageUrl}")`;
       tile.style.backgroundSize = game.imageZoomed ? "300% 300%" : "375% 375%";
-      const positionStep = game.imageZoomed ? 50 : 45.454545;
-      tile.style.backgroundPosition = `${column * positionStep}% ${row * positionStep}%`;
+      const position = (tileIndex) => game.imageZoomed
+        ? tileIndex * 50
+        : ((tileIndex + 0.375) / 2.75) * 100;
+      tile.style.backgroundPosition = `${position(column)}% ${position(row)}%`;
     }
     elements.board.append(tile);
   }
