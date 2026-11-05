@@ -88,52 +88,14 @@ function zoomPhotoAroundContent(photo) {
   try {
     const sourceWidth = photo.naturalWidth;
     const sourceHeight = photo.naturalHeight;
-    const probe = document.createElement("canvas");
-    probe.width = 128;
-    probe.height = 128;
-    const probeContext = probe.getContext("2d", { willReadFrequently: true });
-    probeContext.drawImage(photo, 0, 0, probe.width, probe.height);
-    const pixels = probeContext.getImageData(0, 0, probe.width, probe.height).data;
-    const cornerPoints = [[0, 0], [127, 0], [0, 127], [127, 127]];
-    const background = [0, 1, 2].map((channel) =>
-      Math.round(cornerPoints.reduce((total, [x, y]) => total + pixels[(y * 128 + x) * 4 + channel], 0) / 4));
-    let left = probe.width;
-    let top = probe.height;
-    let right = -1;
-    let bottom = -1;
-    for (let y = 0; y < probe.height; y += 1) {
-      for (let x = 0; x < probe.width; x += 1) {
-        const offset = (y * probe.width + x) * 4;
-        const distance = Math.abs(pixels[offset] - background[0])
-          + Math.abs(pixels[offset + 1] - background[1])
-          + Math.abs(pixels[offset + 2] - background[2]);
-        if (distance > 42) {
-          left = Math.min(left, x);
-          right = Math.max(right, x);
-          top = Math.min(top, y);
-          bottom = Math.max(bottom, y);
-        }
-      }
-    }
-    if (right < left || bottom < top) return null;
-
-    const centerX = ((left + right) / 2) * sourceWidth / probe.width;
-    const centerY = ((top + bottom) / 2) * sourceHeight / probe.height;
-    const targetAspect = 450 / 330;
-    const aspect = sourceWidth / sourceHeight;
-    let cropWidth = aspect > targetAspect ? sourceHeight * targetAspect : sourceWidth;
-    let cropHeight = cropWidth / targetAspect;
-    cropWidth /= 1.25;
-    cropHeight /= 1.25;
-    const cropX = centerX - cropWidth / 2;
-    const cropY = centerY - cropHeight / 2;
-
     const output = document.createElement("canvas");
     output.width = 450;
     output.height = 330;
     const context = output.getContext("2d");
-    context.fillStyle = `rgb(${background.join(",")})`;
-    context.fillRect(0, 0, output.width, output.height);
+    const cropWidth = sourceWidth / 1.25;
+    const cropHeight = sourceHeight / 1.25;
+    const cropX = (sourceWidth - cropWidth) / 2;
+    const cropY = (sourceHeight - cropHeight) / 2;
     context.drawImage(photo, cropX, cropY, cropWidth, cropHeight, 0, 0, output.width, output.height);
     return output.toDataURL("image/jpeg", 0.9);
   } catch {

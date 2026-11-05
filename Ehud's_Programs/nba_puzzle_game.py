@@ -19,7 +19,7 @@ from tkinter import Button, Canvas, Entry, Frame, Label, StringVar, Tk, messageb
 from urllib.error import URLError
 from urllib.request import Request, urlopen
 
-from PIL import Image, ImageChops, ImageOps, ImageTk
+from PIL import Image, ImageOps, ImageTk
 
 
 WINDOW_WIDTH = 560
@@ -387,49 +387,20 @@ def _read_image_bytes(player: Player) -> bytes:
 
 
 def zoom_face_image(image: Image.Image, output_size: tuple[int, int], zoom: float = 1.25) -> Image.Image:
-    """Trim to visible content, center on it, then crop 25% closer."""
+    """Crop a centered 1/zoom region, then resize it to the full tile board."""
     if zoom < 1:
         raise ValueError("Zoom must be at least 1.0.")
     rgb_image = ImageOps.exif_transpose(image).convert("RGB")
-    thumbnail = ImageOps.contain(rgb_image, (128, 128))
-    corners = [
-        thumbnail.getpixel((0, 0)),
-        thumbnail.getpixel((thumbnail.width - 1, 0)),
-        thumbnail.getpixel((0, thumbnail.height - 1)),
-        thumbnail.getpixel((thumbnail.width - 1, thumbnail.height - 1)),
-    ]
-    background = tuple(sorted(corner[channel] for corner in corners)[len(corners) // 2]
-                       for channel in range(3))
-    difference = ImageChops.difference(
-        thumbnail,
-        Image.new("RGB", thumbnail.size, background),
-    ).convert("L")
-    content = difference.point(lambda value: 255 if value > 20 else 0).getbbox()
-    if content:
-        center_x = (content[0] + content[2]) / 2 * rgb_image.width / thumbnail.width
-        center_y = (content[1] + content[3]) / 2 * rgb_image.height / thumbnail.height
-    else:
-        center_x, center_y = rgb_image.width / 2, rgb_image.height / 2
-
-    aspect = output_size[0] / output_size[1]
-    if rgb_image.width / rgb_image.height > aspect:
-        crop_height = rgb_image.height / zoom
-        crop_width = crop_height * aspect
-    else:
-        crop_width = rgb_image.width / zoom
-        crop_height = crop_width / aspect
-    left = round(center_x - crop_width / 2)
-    top = round(center_y - crop_height / 2)
-    crop_width_px = round(crop_width)
-    crop_height_px = round(crop_height)
-    crop = Image.new("RGB", (crop_width_px, crop_height_px), background)
-    source_box = (
-        max(left, 0),
-        max(top, 0),
-        min(left + crop_width_px, rgb_image.width),
-        min(top + crop_height_px, rgb_image.height),
-    )
-    crop.paste(rgb_image.crop(source_box), (source_box[0] - left, source_box[1] - top))
+    crop_width = rgb_image.width / zoom
+    crop_height = rgb_image.height / zoom
+    left = (rgb_image.width - crop_width) / 2
+    top = (rgb_image.height - crop_height) / 2
+    crop = rgb_image.crop((
+        round(left),
+        round(top),
+        round(left + crop_width),
+        round(top + crop_height),
+    ))
     return crop.resize(output_size, Image.Resampling.LANCZOS)
 
 
