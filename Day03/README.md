@@ -46,6 +46,3 @@ Requirements & Architecture:
 
 1. After finishing the local version, I asked the chat to create a browser web version of the game.
 2. Follow some Copilot instructions, such as changing page settings on GitHub.
-
-1. Under **`<Source Control>`** press the **`<+>`** icon on the changes created, name the commit and press the commit icon.
-2. Go back to GitHub and check that the new folder and file have been added to the Repository.
