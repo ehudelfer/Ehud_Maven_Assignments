@@ -1,4 +1,4 @@
-# Day 02: Michaelis–Menten Kinetics Calculator
+# Day 03: Michaelis–Menten Kinetics Calculator
 
 This program calculates the reaction velocity ($v$) of an enzyme-catalyzed reaction using **Michaelis–Menten kinetics**.
 

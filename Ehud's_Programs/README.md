@@ -49,9 +49,7 @@ When started with VS Code's **Run Python File** button and no image argument, th
 The program tries YuNet first and falls back to OpenCV if it cannot detect a face. It saves a report as `person_age_estimate.txt` beside the image; use `--output` to choose another report path. YuNet model weights may be downloaded on first use. If neither detector finds a face, use a clear, well-lit photo with one visible, front-facing face that is not too small or obstructed. If DeepFace is missing, the error shows an install command using the exact Python interpreter running the program. The report explains that the estimate comes from learned facial-appearance patterns and that the model does not provide specific feature-level reasons. This is only a rough estimate, not a verified age; image quality and other factors can affect it.
 ## NBA face puzzle
 
-Play the [NBA Face Puzzle in your browser](https://ehudelfer.github.io/Ehud_Maven_Assignments/). The desktop Python source is [nba_puzzle_game.py](nba_puzzle_game.py).
-
-To publish without a personal access token, open **Settings > Pages** on GitHub. Under **Build and deployment**, choose **Deploy from a branch**, select branch `main` and folder `/docs`, then save. GitHub Pages publishes the browser game from `/docs` and updates it when changes are pushed.
+Play the [NBA Face Puzzle in your browser](https://ehudelfer.github.io/Ehud_Maven_Assignments/). The desktop Python source is [nba_puzzle_game.py](nba_puzzle_game.
 
 Start the Tkinter game with the Python environment that has Pillow installed:
 
