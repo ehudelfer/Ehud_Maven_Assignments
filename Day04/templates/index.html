@@ -1,0 +1,80 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Compound Investment Growth Simulator</title>
+  <style>
+    body { font-family: system-ui, sans-serif; max-width: 820px; margin: 2rem auto; padding: 0 1rem; color: #222; }
+    form { display: grid; gap: .8rem; grid-template-columns: 1fr 1fr; }
+    label { display: flex; flex-direction: column; font-weight: 600; font-size: .9rem; }
+    input { padding: .5rem; font-size: 1rem; margin-top: .25rem; }
+    button { grid-column: 1 / -1; padding: .7rem; font-size: 1rem; background: #2ca02c; color: #fff; border: 0; border-radius: 6px; cursor: pointer; }
+    .error { background: #fdecea; color: #b71c1c; padding: .8rem; border-radius: 6px; margin: 1rem 0; }
+    .summary { display: flex; gap: 1rem; margin: 1.5rem 0; flex-wrap: wrap; }
+    .card { flex: 1; min-width: 200px; background: #f3f7f3; padding: 1rem; border-radius: 8px; }
+    .card strong { display: block; font-size: 1.3rem; }
+    table { border-collapse: collapse; width: 100%; margin-top: 1rem; }
+    th, td { padding: .4rem .6rem; border-bottom: 1px solid #ddd; text-align: right; }
+  </style>
+</head>
+<body>
+  <h1>🌱 Compound Investment Growth Simulator</h1>
+  <form method="post">
+    <label>Initial principal ($)
+      <input type="number" name="starting_budget" step="any" min="0" required value="{{ form.starting_budget or '' }}">
+    </label>
+    <label>Investment horizon (years)
+      <input type="number" name="years" step="1" min="1" required value="{{ form.years or '' }}">
+    </label>
+    <label>Monthly contribution ($)
+      <input type="number" name="monthly_investment" step="any" min="0" required value="{{ form.monthly_investment or '' }}">
+    </label>
+    <label>Expected annual return (%)
+      <input type="number" name="annual_interest_rate" step="any" min="0" required value="{{ form.annual_interest_rate or '' }}">
+    </label>
+    <button type="submit">Calculate</button>
+  </form>
+
+  {% if error %}<div class="error">❌ {{ error }}</div>{% endif %}
+
+  {% if result %}
+  <div class="summary">
+    <div class="card">Total Principal Invested<strong>${{ "{:,.2f}".format(result.contributions) }}</strong></div>
+    <div class="card">Total Interest Earned<strong>${{ "{:,.2f}".format(result.interest) }}</strong></div>
+    <div class="card">Final Portfolio Value<strong>${{ "{:,.2f}".format(result.final) }}</strong></div>
+  </div>
+
+  <canvas id="chart" height="120"></canvas>
+
+  <table>
+    <thead><tr><th>Year</th><th>Portfolio Value</th></tr></thead>
+    <tbody>
+      {% for year, value in result.rows %}
+      <tr><td>{{ year }}</td><td>${{ "{:,.2f}".format(value) }}</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  <script>
+    new Chart(document.getElementById("chart"), {
+      type: "line",
+      data: {
+        labels: {{ result.labels | tojson }},
+        datasets: [
+          { label: "Total Principal Invested", data: {{ result.invested | tojson }}, borderColor: "#1f77b4", borderDash: [6, 4], pointRadius: 0 },
+          { label: "Portfolio Value (with Interest)", data: {{ result.portfolio | tojson }}, borderColor: "#2ca02c", borderWidth: 3, pointRadius: 0 }
+        ]
+      },
+      options: {
+        scales: {
+          x: { title: { display: true, text: "Year" } },
+          y: { ticks: { callback: v => "$" + v.toLocaleString() } }
+        }
+      }
+    });
+  </script>
+  {% endif %}
+</body>
+</html>
