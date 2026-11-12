@@ -1,3 +1,5 @@
+import math
+
 import matplotlib.pyplot as plt
 import matplotlib.ticker as ticker
 
@@ -12,6 +14,9 @@ def calculate_investment(
 
     Assumes monthly contributions are added at the end of each month.
 
+    Raises:
+        ValueError: If inputs are invalid or the result is too large.
+
     Returns:
         tuple containing:
         - final_budget (float)
@@ -19,8 +24,17 @@ def calculate_investment(
         - total_contributions (float)
         - total_interest_earned (float)
     """
+    for value in (starting_budget, monthly_investment, annual_interest_rate):
+        try:
+            finite = math.isfinite(value)
+        except OverflowError as error:
+            raise ValueError("Input is too large to calculate.") from error
+        if not finite:
+            raise ValueError("All monetary amounts and the interest rate must be finite.")
     if starting_budget < 0:
         raise ValueError("Starting budget cannot be negative.")
+    if not isinstance(years, int) or isinstance(years, bool):
+        raise ValueError("Investment duration must be a whole number of years.")
     if years <= 0:
         raise ValueError("Investment duration must be at least 1 year.")
     if monthly_investment < 0:
@@ -36,9 +50,13 @@ def calculate_investment(
         for _ in range(12):
             budget *= 1 + monthly_interest_rate
             budget += monthly_investment
+            if not math.isfinite(budget):
+                raise ValueError("Result is too large to calculate.")
         yearly_budgets.append(budget)
 
     total_contributions = starting_budget + (monthly_investment * 12 * years)
+    if not math.isfinite(total_contributions):
+        raise ValueError("Result is too large to calculate.")
     total_interest_earned = budget - total_contributions
 
     return budget, yearly_budgets, total_contributions, total_interest_earned

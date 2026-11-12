@@ -24,8 +24,8 @@
     <label>Initial principal ($)
       <input type="number" name="starting_budget" step="any" min="0" required value="{{ form.starting_budget or '' }}">
     </label>
-    <label>Investment horizon (years)
-      <input type="number" name="years" step="1" min="1" required value="{{ form.years or '' }}">
+    <label>Investment horizon (years, maximum {{ max_years }})
+      <input type="number" name="years" step="1" min="1" max="{{ max_years }}" required value="{{ form.years or '' }}">
     </label>
     <label>Monthly contribution ($)
       <input type="number" name="monthly_investment" step="any" min="0" required value="{{ form.monthly_investment or '' }}">
